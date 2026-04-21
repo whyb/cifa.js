@@ -351,7 +351,6 @@ return y;`
         if (!this.isReady) return;
 
         const code = this.editor.getValue();
-        //this.appendOutput('info', '> 运行中...');
 
         const startTime = performance.now();
         let result;
@@ -363,7 +362,8 @@ return y;`
                 success: false,
                 runtimeError: 'Execution crashed: ' + err.message,
                 errors: [],
-                value: ''
+                value: '',
+                output: ''
             };
         }
 
@@ -373,6 +373,11 @@ return y;`
         this.disposeEmbind(rawErrors);
 
         this.updateErrors(errors);
+
+        // 显示 print/println 的输出
+        if (result && result.output) {
+            this.appendOutput('info', result.output);
+        }
 
         if (result && result.success) {
             this.appendOutput('success', `执行成功 (${duration}ms)`);

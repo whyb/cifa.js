@@ -1,6 +1,7 @@
 #include <emscripten/bind.h>
 #include "Cifa.h"
 #include <sstream>
+#include <iostream>
 
 using namespace emscripten;
 using namespace cifa;
@@ -18,6 +19,7 @@ struct ExecuteResult {
     std::string value;
     std::vector<JsErrorMessage> errors;
     std::string runtimeError;
+    std::string output;
 };
 
 // 将 Cifa 错误信息转换为 JsErrorMessage
@@ -55,6 +57,11 @@ ExecuteResult execute(const std::string& code) {
     ExecuteResult result;
     result.success = false;
     
+    // 重定向 cout 到 stringstream 以捕获 print/println 输出
+    std::streambuf* oldCoutStreamBuf = std::cout.rdbuf();
+    std::ostringstream capturedOutput;
+    std::cout.rdbuf(capturedOutput.rdbuf());
+    
     Cifa cifa;
     
     // 设置死循环保护
@@ -66,6 +73,12 @@ ExecuteResult execute(const std::string& code) {
     
     // 执行脚本
     Object obj = cifa.run_script(code);
+    
+    // 恢复原始 cout 缓冲区
+    std::cout.rdbuf(oldCoutStreamBuf);
+    
+    // 获取捕获的输出
+    result.output = capturedOutput.str();
     
     // 检查语法错误
     if (cifa.has_error()) {
@@ -128,7 +141,8 @@ EMSCRIPTEN_BINDINGS(cifa_module) {
         .field("success", &ExecuteResult::success)
         .field("value", &ExecuteResult::value)
         .field("errors", &ExecuteResult::errors)
-        .field("runtimeError", &ExecuteResult::runtimeError);
+        .field("runtimeError", &ExecuteResult::runtimeError)
+        .field("output", &ExecuteResult::output);
     
     // 注册向量类型
     register_vector<JsErrorMessage>("VectorJsErrorMessage");
