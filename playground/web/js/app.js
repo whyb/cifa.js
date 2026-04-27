@@ -388,6 +388,52 @@ double res2 = a / 2.0;
 return res + res2;`
             },
             {
+                id: 'sprintf_format',
+                name: 'sprintf 和 format 格式化',
+                code: `// --- sprintf (printf 风格) ---
+// %s 字符串
+println(sprintf("Hello %s!", "World"));
+
+// %d 整数和 %.2f 浮点
+println(sprintf("%d + %.2f = %.2f", 3, 1.5, 4.5));
+
+// %% 转义
+println(sprintf("100%%"));
+
+// %x 十六进制
+println(sprintf("255 in hex = %x", 255));
+
+// --- format (Python 风格) ---
+// 自动 {}
+println(format("Hello {}!", "World"));
+
+// 显式索引 {N}
+println(format("{1} and {0}", "B", "A"));
+
+// 整数数字不带小数点
+println(format("x = {}", 42));
+
+// 浮点数字
+println(format("pi = {}", 3.14));
+
+// {{ }} 转义
+println(format("{{{}}}", "ok"));
+
+// {:格式说明符} 自动索引
+println(format("{:.2f}", 3.14159));
+
+// {N:格式说明符} 显式索引
+println(format("{0:d} / {1:.1f}", 7, 3.0));
+
+// {:s} 字符串格式
+println(format("{:s}", "hi"));
+
+// {:.2} 无类型尾缀 — 数字按 %g 保留2位有效数字
+println(format("{:.2}", 3.14159));
+
+return 0;`
+            },
+            {
                 id: 'mixed_array',
                 name: '混合类型数组',
                 code: `arr = {1, "hello", 3.14, "world"};
