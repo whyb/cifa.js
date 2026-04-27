@@ -54,6 +54,17 @@ total_result = sum + product + division + difference;
 return total_result;`
             },
             {
+                id: 'loop_control',
+                name: '循环控制',
+                code: `int sum = 0;
+for (int i = 0; i < 10; i++) {
+    if (i % 2 == 0) continue;
+    if (i > 7) break;
+    sum += i;
+}
+return sum;`
+            },
+            {
                 id: 'recursion',
                 name: '递归 factorial',
                 code: `double factorial(double n) {
@@ -80,6 +91,18 @@ println("size = ", size(a));
 return a[1];`
             },
             {
+                id: 'array_literal',
+                name: '数组字面量',
+                code: `array = {1, 2, 3, 4, 5};
+return array[0] + array[4];`
+            },
+            {
+                id: 'multi_dim_array',
+                name: '多维数组',
+                code: `grid = {{1, 2}, {3, 4}};
+return grid[1][0];`
+            },
+            {
                 id: 'map_usage',
                 name: 'Map 用法',
                 code: `dict["name"] = "Alice";
@@ -87,6 +110,216 @@ dict["age"] = 30;
 string key = "name";
 println("Name: ", dict[key]);
 return dict["age"];`
+            },
+            {
+                id: 'map_methods',
+                name: 'Map 方法',
+                code: `m["x"] = 10;
+m["y"] = 20;
+m["z"] = 30;
+m.erase("y");
+return size(m);`
+            },
+            {
+                id: 'map_contains_keys',
+                name: 'Map contains 和 keys',
+                code: `dict["apple"] = 5;
+dict["banana"] = 3;
+dict["orange"] = 8;
+
+// 检查是否包含某个键
+if (dict.contains("apple")) {
+    println("有苹果");
+}
+
+if (!dict.contains("grape")) {
+    println("没有葡萄");
+}
+
+// 获取所有键
+keys = dict.keys();
+println("键的数量: ", size(keys));
+
+// 遍历打印所有键值对
+for (int i = 0; i < size(keys); i++) {
+    string key = keys[i];
+    println(key, " = ", dict[key]);
+}
+
+return size(dict);`
+            },
+            {
+                id: 'map_clear',
+                name: 'Map clear 清空',
+                code: `m["a"] = 1;
+m["b"] = 2;
+m["c"] = 3;
+println("清空前大小: ", size(m));
+
+m.clear();
+println("清空后大小: ", size(m));
+
+// 重新添加元素
+m["new"] = 100;
+return size(m);`
+            },
+            {
+                id: 'vector_resize',
+                name: 'Vector resize 调整大小',
+                code: `arr = {1, 2, 3};
+println("原始大小: ", size(arr));
+
+arr.resize(5);
+println("resize后大小: ", size(arr));
+
+arr.resize(2);
+println("缩小后大小: ", size(arr));
+
+// 添加新元素
+arr.push_back(99);
+return size(arr);`
+            },
+            {
+                id: 'vector_contains',
+                name: 'Vector contains 查找元素',
+                code: `arr = {10, 20, 30, 40, 50};
+
+if (arr.contains(30)) {
+    println("包含 30");
+}
+
+if (!arr.contains(100)) {
+    println("不包含 100");
+}
+
+// 查找并统计包含关系
+int found = 0;
+for (int i = 0; i < size(arr); i++) {
+    if (arr.contains(arr[i])) {
+        found = found + 1;
+    }
+}
+
+return found;`
+            },
+            {
+                id: 'vector_clear',
+                name: 'Vector clear 清空',
+                code: `arr = {1, 2, 3, 4, 5};
+println("清空前: ", size(arr));
+
+arr.clear();
+println("清空后: ", size(arr));
+
+// 清空后重新使用
+arr.push_back(100);
+arr.push_back(200);
+return arr[0] + arr[1];`
+            },
+            {
+                id: 'vector_insert_erase',
+                name: 'Vector insert 和 erase',
+                code: `arr = {1, 3, 5};
+println("初始: ", arr[0], ", ", arr[1], ", ", arr[2]);
+
+// 在位置 1 插入 2
+arr.insert(1, 2);
+println("插入后大小: ", size(arr));
+
+// 删除位置 0 的元素
+arr.erase(0);
+println("删除后大小: ", size(arr));
+
+// 打印剩余元素
+for (int i = 0; i < size(arr); i++) {
+    println("arr[", i, "] = ", arr[i]);
+}
+
+return size(arr);`
+            },
+            {
+                id: 'global_functions',
+                name: '全局数学函数',
+                code: `double x = 16.0;
+double y = 3.0;
+
+println("sqrt(16) = ", sqrt(x));
+println("pow(2, 3) = ", pow(2, y));
+println("max(5, 10) = ", max(5, 10));
+println("min(5, 10) = ", min(5, 10));
+println("abs(-5) = ", abs(-5));
+println("round(3.7) = ", round(3.7));
+println("floor(3.7) = ", floor(3.7));
+println("ceil(3.2) = ", ceil(3.2));
+
+return sqrt(x);`
+            },
+            {
+                id: 'trig_functions',
+                name: '三角函数',
+                code: `double pi = 3.14159;
+double angle = pi / 4;  // 45度
+
+println("sin(45°) = ", sin(angle));
+println("cos(45°) = ", cos(angle));
+println("tan(45°) = ", tan(angle));
+
+double s = sin(angle);
+double c = cos(angle);
+// sin² + cos² = 1
+return s * s + c * c;`
+            },
+            {
+                id: 'random_function',
+                name: 'Random 随机数',
+                code: `// 生成一些随机数
+println("随机数 [0,1): ", random());
+println("随机数 [0,10): ", random(10));
+println("随机数 [5,15): ", random(5, 15));
+
+// 生成多个随机数求和
+double sum = 0;
+for (int i = 0; i < 5; i++) {
+    sum = sum + random(1, 6);  // 模拟骰子
+}
+return sum;`
+            },
+            {
+                id: 'to_string_number',
+                name: '类型转换函数',
+                code: `int n = 42;
+double f = 3.14;
+string s = "123";
+
+// 数字转字符串
+string str1 = to_string(n);
+string str2 = to_string(f);
+println("字符串: ", str1, ", ", str2);
+
+// 字符串转数字
+double num = to_number(s);
+println("数字: ", num);
+
+// 结合使用
+return to_number("100") + 23;`
+            },
+            {
+                id: 'size_function',
+                name: 'Size 函数多种用法',
+                code: `// 数组大小
+arr = {1, 2, 3, 4, 5};
+println("数组大小: ", size(arr));
+
+// Map 大小
+m["a"] = 1;
+m["b"] = 2;
+println("Map 大小: ", size(m));
+
+// 字符串长度
+string s = "Hello";
+println("字符串长度: ", size(s));
+
+return size(arr) + size(m);`
             },
             {
                 id: 'ternary_switch',
@@ -102,6 +335,78 @@ switch (x) {
 }
 
 return x > 1 ? res : 0;`
+            },
+            {
+                id: 'ternary_nested',
+                name: '嵌套三目运算',
+                code: `int a = 1, b = 0;
+return a > b ? (b > a ? 10 : 20) : 30;`
+            },
+            {
+                id: 'bitwise',
+                name: '位运算',
+                code: `int a = 5;      // 0101
+int b = 3;      // 0011
+int res1 = a & b;  // 0001 (1)
+int res2 = a | b;  // 0111 (7)
+int res3 = a ^ b;  // 0110 (6)
+int res4 = a << 1; // 1010 (10)
+return res1 + res2 + res3 + res4;`
+            },
+            {
+                id: 'scope_shadowing',
+                name: '作用域遮蔽',
+                code: `int x = 10;
+{
+    int x = 20;
+    if (x == 20) {
+        int x = 30;
+    }
+}
+return x;`
+            },
+            {
+                id: 'math_priority',
+                name: '算术优先级',
+                code: `return 2 + 3 * 4 / (1 + 1) - 5 % 2;`
+            },
+            {
+                id: 'compound_assign',
+                name: '复合赋值',
+                code: `int x = 10;
+x *= 2 + 3;
+x %= 7;
+return x;`
+            },
+            {
+                id: 'type_promotion',
+                name: '类型提升',
+                code: `int a = 5;
+int b = 2;
+double res = floor(a / b);
+double res2 = a / 2.0;
+return res + res2;`
+            },
+            {
+                id: 'mixed_array',
+                name: '混合类型数组',
+                code: `arr = {1, "hello", 3.14, "world"};
+int i = 2;
+double n = arr[0];
+string s = arr[1];
+double f = arr[i];
+println(s, " ", to_string(f));
+return n + f;`
+            },
+            {
+                id: 'empty_statement',
+                name: '空语句',
+                code: `int x = 10;;;
+if (x > 5) {}
+else ;
+while(false){;}
+for(;false;);
+return x;`
             },
             {
                 id: 'syntax_error_demo',
