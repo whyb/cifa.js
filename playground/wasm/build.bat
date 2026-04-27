@@ -3,7 +3,7 @@ setlocal enabledelayedexpansion
 
 :: --- 配置变量 (对应 Makefile 变量) ---
 set EMCC=emcc
-set CFLAGS=-O3 -std=c++20 -I../../
+set CFLAGS=-O3 -std=c++23 -I../../
 set LDFLAGS=-s WASM=1 -s EXPORT_ES6=1 -s MODULARIZE=1 -s EXPORT_NAME="CifaModule" -s ALLOW_MEMORY_GROWTH=1 -s INITIAL_MEMORY=32MB -s MAXIMUM_MEMORY=256MB -s STACK_SIZE=8MB --bind
 
 set TARGET_DIR=..\web
@@ -51,7 +51,7 @@ goto :eof
 if not exist "%TARGET_DIR%" mkdir "%TARGET_DIR%"
 echo Building debug version...
 
-%EMCC% -g -O0 -std=c++17 -I../../ %LDFLAGS% -s ASSERTIONS=1 -o "%TARGET_JS%" %SOURCES%
+%EMCC% -g -O0 -std=c++23 -I../../ %LDFLAGS% -s ASSERTIONS=1 -o "%TARGET_JS%" %SOURCES%
 
 if %ERRORLEVEL% equ 0 (
     echo Debug build successful.
