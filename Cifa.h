@@ -272,9 +272,9 @@ private:
     //运算符，此处的顺序即优先级，单目和右结合由下面的列表判断
     inline static const std::vector<std::vector<std::string>> ops = { { "::", ".", "++", "--" }, { "~", "!" }, { "*", "/", "%" }, { "+", "-" }, { "<<", ">>" }, { ">", "<", ">=", "<=" }, { "==", "!=" }, { "&" }, { "^" }, { "|" }, { "&&" }, { ":", "?" }, { "||" }, { "=", "*=", "/=", "%=", "+=", "-=", "<<=", ">>=", "&=", "|=", "^=" }, { "," } };
     //单目运算符全部是右结合
-    inline static const std::vector<std::string> ops_single = { "++", "--", "~", "!", "()++", "()--" };       
+    inline static const std::vector<std::string> ops_single = { "++", "--", "~", "!", "()++", "()--" };
     //右结合的运算符，注意+-既有单目又有双目，因此不能简单地放在单目列表中
-    inline static const std::vector<std::string> ops_right = { "=", "*=", "/=", "%=", "+=", "-=", "<<=", ">>=", "&=", "|=", "^=" };    
+    inline static const std::vector<std::string> ops_right = { "=", "*=", "/=", "%=", "+=", "-=", "<<=", ">>=", "&=", "|=", "^=" };
     //关键字，在表中的位置为其所需参数个数
     inline static const std::vector<std::vector<std::string>> keys = { { "true", "false" }, { "break", "continue", "else", "return", "default" }, { "if", "for", "while", "do", "switch", "case" } };
     //类型列表，注意auto虽然不是真正的类型，但在语法分析阶段当作类型处理，实际运行时会被忽略
@@ -331,12 +331,12 @@ public:
     template <typename T>
     void register_parameter(const std::string& name, std::map<std::string, T> m)
     {
-        //两重的暂时如此处理
-        parameters[name] = "";
-        for (auto& o : m)
+        ObjectMap omap;
+        for (auto& [k, v] : m)
         {
-            parameters[name + "::" + o.first] = Object(o.second);
+            omap[k] = Object(v);
         }
+        parameters[name] = Object(std::move(omap));
     }
 
     template <typename T>
@@ -344,14 +344,11 @@ public:
     {
         std::vector<Object> arr;
         arr.reserve(v.size());
-        int i = 0;
         for (auto& o : v)
         {
             arr.emplace_back(Object(o));
-            // Keep compatibility with old flat-key behavior (name[index]).
-            parameters[name + "[" + std::to_string(i++) + "]"] = Object(o);
         }
-        parameters[name] = Object(arr);
+        parameters[name] = Object(std::move(arr));
     }
 
     void* get_user_data(const std::string& name);
@@ -362,13 +359,16 @@ public:
 
     bool has_error() const { return !errors.empty(); }
 
-    std::vector<ErrorMessage> get_errors() const;
-
     std::string get_errors_str() const;
+
+    //建议优先使用 get_errors_str() 或 print_errors()，直接获取带行列信息的格式化字符串
+    std::vector<ErrorMessage> get_errors() const;
 
     void print_errors() const;
 
     void set_output_error(bool oe) { output_error = oe; }
+
+    std::string get_runtime_error() const { return runtime_error_message; }
 
     //用户可扩展的运算符函数列表
     std::vector<std::function<Object(const Object&, const Object&)>> user_add, user_sub, user_mul, user_div, user_mod,
@@ -377,7 +377,6 @@ public:
         user_shift_left, user_shift_right;
 
 private:
-    Object eval(CalUnit& c, std::unordered_map<std::string, Object>& p);
     Object eval_scoped(CalUnit& c, ScopeStack& scopes);
     Object run_function(const std::string& name, std::vector<CalUnit>& vc, ScopeStack& scopes);
     Object eval_builtin_method(const std::string& method_name, Object& obj, std::vector<CalUnit>& args, ScopeStack& scopes);
@@ -397,15 +396,8 @@ private:
     void combine_keys(std::list<CalUnit>& ppp);
     void combine_functions2(std::list<CalUnit>& ppp);
 
-    Object& get_parameter(CalUnit& c, std::unordered_map<std::string, Object>& p, bool only_check = false);
     Object& get_parameter(CalUnit& c, ScopeStack& scopes, bool only_check = false);
-    std::string convert_parameter_name(CalUnit& c, std::unordered_map<std::string, Object>& p, bool only_check = false);
-    std::string convert_parameter_name(CalUnit& c, ScopeStack& scopes, bool only_check = false);
-    bool check_parameter(CalUnit& c, std::unordered_map<std::string, Object>& p);
-    bool check_parameter(CalUnit& c, ScopeStack& scopes);
-    Object& get_parameter(const std::string& name, std::unordered_map<std::string, Object>& p);
     Object& get_parameter(const std::string& name, ScopeStack& scopes);
-    bool check_parameter(const std::string& name, std::unordered_map<std::string, Object>& p);
     bool check_parameter(const std::string& name, ScopeStack& scopes);
     Object& get_parameter_for_assign(CalUnit& c, ScopeStack& scopes, bool declare_current = false);
     Object& resolve_indexed_parameter(CalUnit& c, ScopeStack& scopes, bool only_check, bool declare_current, bool declaration_as_array);
@@ -423,6 +415,7 @@ private:
     void print_runtime_error() const;
 
     void check_cal_unit(CalUnit& c, CalUnit* father, std::unordered_map<std::string, Object>& p);
+    void check_non_block_body(CalUnit& c, const std::unordered_map<std::string, Object>& p);
 
     template <typename... Args>
     void add_error(CalUnit& c, Args... args)

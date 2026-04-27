@@ -93,7 +93,8 @@ ExecuteResult execute(const std::string& code) {
             result.errors = runtimeErrors;
             result.runtimeError = runtimeErrors.front().message;
         } else {
-            result.runtimeError = "Runtime error occurred";
+            std::string runtimeErr = cifa.get_runtime_error();
+            result.runtimeError = runtimeErr.empty() ? "Runtime error occurred" : runtimeErr;
         }
         return result;
     }
