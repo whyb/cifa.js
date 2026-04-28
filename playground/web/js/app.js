@@ -403,6 +403,12 @@ println(sprintf("100%%"));
 // %x 十六进制
 println(sprintf("255 in hex = %x", 255));
 
+// %llu 显式长度修饰符
+println(sprintf("%llu", 12345));
+
+// 零填充 + 精度
+println(sprintf("%08.2f", 3.14));
+
 // --- format (Python 风格) ---
 // 自动 {}
 println(format("Hello {}!", "World"));
