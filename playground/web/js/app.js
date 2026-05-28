@@ -371,6 +371,40 @@ return x;`
                 code: `return 2 + 3 * 4 / (1 + 1) - 5 % 2;`
             },
             {
+                id: 'same_precedence_assoc',
+                name: '同优先级左结合',
+                code: `// 同优先级运算符从左到右结合：a/b*c == (a/b)*c
+println("100/10*2 = ", 100 / 10 * 2);
+println("100*10/2 = ", 100 * 10 / 2);
+println("100/10%3 = ", 100 / 10 % 3);
+println("10%4/2 = ", 10 % 4 / 2);
+println("10-3+1 = ", 10 - 3 + 1);
+
+double lW = 8, lH = 6;
+println("lW/2*lH/2 = ", lW / 2 * lH / 2);
+
+return 100 / 10 * 2;`
+            },
+            {
+                id: 'unary_plus_minus',
+                name: '一元正负号',
+                code: `println("-5 = ", -5);
+println("-(2+3) = ", -(2 + 3));
+println("-(-3) = ", -(-3));
+println("1 - -2 = ", 1 - -2);
+println("10 - 3 - 2 = ", 10 - 3 - 2);
+println("-3 + 5 = ", -3 + 5);
+println("2 * -3 = ", 2 * -3);
+println("-(2*3) = ", -(2 * 3));
+println("-2 + -3 = ", -2 + -3);
+println("+5 = ", +5);
+println("+(2+3) = ", +(2 + 3));
+println("2 * +3 = ", 2 * +3);
+println("1 + +2 = ", 1 + +2);
+
+return 2 * -3;`
+            },
+            {
                 id: 'compound_assign',
                 name: '复合赋值',
                 code: `int x = 10;
