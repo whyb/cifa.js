@@ -153,6 +153,9 @@ class CifaPlayground {
         // Multi-tab state
         this.tabs = [];
         this.activeTabId = null;
+
+        // Suppress content-change modified tracking during programmatic setValue
+        this._suppressContentChange = false;
     }
 
     /* ---- Bootstrap ---- */
@@ -232,6 +235,8 @@ class CifaPlayground {
 
                 this.editor.onDidChangeModelContent(() => {
                     this.scheduleLint();
+                    // Skip modified tracking during programmatic setValue (activateTab)
+                    if (this._suppressContentChange) return;
                     // Mark current tab as modified
                     const tab = this.getActiveTab();
                     if (tab) {
@@ -439,8 +444,11 @@ class CifaPlayground {
         if (!newTab) return;
         if (oldTab && oldTab.id === tabId && !forceRefresh) return;
 
-        // Save old tab state
-        if (oldTab) {
+        // Save old tab state (only if switching to a *different* tab;
+        // when refreshing the same tab via forceRefresh, the caller has
+        // already set the new code/modified/originalCode on the tab object,
+        // so we must NOT overwrite it with the stale editor value)
+        if (oldTab && oldTab.id !== tabId) {
             oldTab.code = this.editor.getValue();
             oldTab.editorViewState = this.editor.saveViewState();
             // Save current bottom panel HTML
@@ -450,10 +458,16 @@ class CifaPlayground {
         // Switch
         this.activeTabId = tabId;
 
-        // Restore new tab editor content
-        this.editor.setValue(newTab.code);
-        if (newTab.editorViewState) {
-            this.editor.restoreViewState(newTab.editorViewState);
+        // Suppress content-change handler from marking tab as modified during setValue
+        this._suppressContentChange = true;
+        try {
+            // Restore new tab editor content
+            this.editor.setValue(newTab.code);
+            if (newTab.editorViewState) {
+                this.editor.restoreViewState(newTab.editorViewState);
+            }
+        } finally {
+            this._suppressContentChange = false;
         }
 
         // Restore bottom panel
