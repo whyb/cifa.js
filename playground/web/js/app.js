@@ -461,6 +461,44 @@ for(;false;);
 return x;`
             },
             {
+                id: 'struct_usage',
+                name: 'Struct 结构体',
+                code: `struct Point { int x; int y; };
+Point p;
+p.x = 10;
+p.y = 20;
+t1 = p.x + p.y;
+println(t1);
+
+struct Vec { int x; int y; int z; };
+Vec v;
+v.x = 1; v.y = 2; v.z = 3;
+t2 = v.x * 100 + v.y * 10 + v.z;
+println(t2);
+
+struct Counter { int n; };
+Counter cnt;
+cnt.n = 5;
+cnt.n += 3;
+t3 = cnt.n;
+println(t3);
+
+struct Rect { int w; int h; };
+area(r) { return r.w * r.h; }
+Rect r;
+r.w = 4; r.h = 5;
+t4 = area(r);
+println(t4);
+
+struct Point { int x; int y; };
+Point p;
+p.x = 3;
+p.y = 7;
+t5 = p.x + p.y;
+println(t5);
+return (t1+t2+t3+t4+t5);`
+            },
+            {
                 id: 'syntax_error_demo',
                 name: '错误示例: 语法错误',
                 code: `int x = 10;
@@ -510,7 +548,7 @@ return y;`
             require(['vs/editor/editor.main'], () => {
                 monaco.languages.register({ id: 'cifa' });
                 monaco.languages.setMonarchTokensProvider('cifa', {
-                    keywords: ['auto', 'break', 'case', 'continue', 'default', 'do', 'else', 'for', 'if', 'return', 'switch', 'while', 'int', 'float', 'double', 'string', 'char', 'true', 'false'],
+                    keywords: ['auto', 'break', 'case', 'continue', 'default', 'do', 'else', 'for', 'if', 'return', 'struct', 'switch', 'while', 'int', 'float', 'double', 'string', 'char', 'true', 'false'],
                     operators: ['=', '>', '<', '!', '~', '?', ':', '==', '<=', '>=', '!=', '&&', '||', '++', '--', '+', '-', '*', '/', '&', '|', '^', '%', '<<', '>>', '+=', '-=', '*=', '/=', '&=', '|=', '^=', '%='],
                     tokenizer: {
                         root: [
