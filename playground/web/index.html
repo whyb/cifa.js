@@ -20,8 +20,8 @@
 
     <!-- Activity Bar -->
     <div class="activity-bar">
-        <div class="activity-bar-item active" id="activity-examples" title="示例代码">
-            <svg viewBox="0 0 24 24"><path d="M3 3h18v2H3V3zm0 4h12v2H3V7zm0 4h18v2H3v-2zm0 4h12v2H3v-2zm0 4h18v2H3v-2z"/></svg>
+        <div class="activity-bar-item active" id="activity-explorer" title="资源管理器">
+            <svg viewBox="0 0 24 24"><path d="M10 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z"/></svg>
         </div>
         <div class="activity-bar-item" id="activity-settings" title="设置" style="margin-top:auto;">
             <svg viewBox="0 0 24 24"><path d="M19.14 12.94a7.07 7.07 0 000-1.88l2.03-1.58a.49.49 0 00.12-.61l-1.92-3.32a.49.49 0 00-.59-.22l-2.39.96a7.04 7.04 0 00-1.63-.94l-.36-2.54a.48.48 0 00-.48-.41h-3.84a.48.48 0 00-.48.41l-.36 2.54c-.59.24-1.13.57-1.63.94l-2.39-.96a.49.49 0 00-.59.22L2.74 8.87a.48.48 0 00.12.61l2.03 1.58a7.07 7.07 0 000 1.88l-2.03 1.58a.49.49 0 00-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.37 1.04.7 1.63.94l.36 2.54c.05.24.26.41.48.41h3.84c.24 0 .44-.17.48-.41l.36-2.54c.59-.24 1.13-.57 1.63-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32a.49.49 0 00-.12-.61l-2.03-1.58zM12 15.6A3.6 3.6 0 1115.6 12 3.61 3.61 0 0112 15.6z"/></svg>
@@ -30,8 +30,18 @@
 
     <!-- Sidebar -->
     <div class="sidebar" id="sidebar">
-        <div class="sidebar-header">示例代码</div>
-        <div class="sidebar-content" id="sidebar-tree">
+        <div class="sidebar-header">
+            <span>资源管理器</span>
+            <div class="sidebar-actions">
+                <button class="sidebar-action-btn" id="btn-new-file" title="新建文件">
+                    <svg viewBox="0 0 16 16" fill="currentColor"><path d="M13.5 1h-7L3 4.5V14a1 1 0 001 1h9a1 1 0 001-1V2a1 1 0 00-1-1zM9 2v3h3L9 2zM4 14V5.5H3.5a.5.5 0 00-.5.5v8a.5.5 0 00.5.5H4z"/></svg>
+                </button>
+                <button class="sidebar-action-btn" id="btn-new-folder" title="新建文件夹">
+                    <svg viewBox="0 0 16 16" fill="currentColor"><path d="M14 4H9L7.5 2H2a1 1 0 00-1 1v10a1 1 0 001 1h12a1 1 0 001-1V5a1 1 0 00-1-1z"/></svg>
+                </button>
+            </div>
+        </div>
+        <div class="sidebar-content" id="file-tree">
             <!-- Populated by JS -->
         </div>
     </div>
@@ -108,6 +118,24 @@
             </div>
         </div>
     </div>
+</div>
+
+<!-- ============ Context Menus ============ -->
+<div class="context-menu" id="context-menu-file">
+    <div class="context-menu-item" data-action="rename">重命名</div>
+    <div class="context-menu-item" data-action="delete">删除文件</div>
+</div>
+<div class="context-menu" id="context-menu-folder">
+    <div class="context-menu-item" data-action="new-file">新建文件</div>
+    <div class="context-menu-item" data-action="new-folder">新建文件夹</div>
+    <div class="context-menu-separator"></div>
+    <div class="context-menu-item" data-action="rename">重命名</div>
+    <div class="context-menu-item" data-action="delete">删除文件夹</div>
+</div>
+<div class="context-menu" id="context-menu-tab">
+    <div class="context-menu-item" data-action="close">关闭</div>
+    <div class="context-menu-item" data-action="close-others">关闭其他</div>
+    <div class="context-menu-item" data-action="close-all">关闭全部</div>
 </div>
 
 <!-- ============ Status Bar ============ -->

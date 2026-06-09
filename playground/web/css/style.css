@@ -176,6 +176,7 @@ html, body {
     height: 36px;
     display: flex;
     align-items: center;
+    justify-content: space-between;
     padding: 0 16px;
     font-size: 11px;
     font-weight: 600;
@@ -185,77 +186,176 @@ html, body {
     user-select: none;
 }
 
+.sidebar-actions {
+    display: flex;
+    gap: 2px;
+}
+
+.sidebar-action-btn {
+    width: 22px;
+    height: 22px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: none;
+    border: none;
+    color: var(--fg-secondary);
+    cursor: pointer;
+    border-radius: 3px;
+    padding: 0;
+}
+
+.sidebar-action-btn:hover {
+    background: var(--bg-hover);
+    color: var(--fg-bright);
+}
+
+.sidebar-action-btn svg {
+    width: 16px;
+    height: 16px;
+}
+
 .sidebar-content {
     flex: 1;
     overflow-y: auto;
     overflow-x: hidden;
 }
 
-/* Sidebar tree items */
-.tree-item {
+/* Sidebar tree items (file explorer) */
+.file-tree-children {
+    overflow: hidden;
+}
+
+.file-tree-children.collapsed {
+    display: none;
+}
+
+.file-tree-folder-header {
     display: flex;
     align-items: center;
-    padding: 4px 16px;
+    padding: 3px 8px;
+    padding-left: calc(8px + var(--depth, 0) * 16px);
     cursor: pointer;
     font-size: 13px;
     color: var(--fg-primary);
     user-select: none;
     white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
 }
 
-.tree-item:hover {
+.file-tree-folder-header:hover {
     background: var(--bg-hover);
 }
 
-.tree-item.active {
-    background: var(--bg-active);
-}
-
-.tree-item .tree-icon {
-    margin-right: 6px;
-    font-size: 14px;
-    flex-shrink: 0;
-    width: 16px;
-    text-align: center;
-}
-
-.tree-group-header {
-    display: flex;
-    align-items: center;
-    padding: 6px 8px 6px 12px;
-    cursor: pointer;
-    font-size: 11px;
-    font-weight: 600;
-    color: var(--fg-secondary);
-    text-transform: uppercase;
-    user-select: none;
-}
-
-.tree-group-header:hover {
-    color: var(--fg-bright);
-}
-
-.tree-group-header .chevron {
-    margin-right: 4px;
+.file-tree-folder-header .folder-chevron {
+    margin-right: 2px;
     font-size: 10px;
     transition: transform 0.15s;
     display: inline-block;
     width: 16px;
     text-align: center;
+    flex-shrink: 0;
 }
 
-.tree-group-header.collapsed .chevron {
+.file-tree-folder-header.collapsed .folder-chevron {
     transform: rotate(-90deg);
 }
 
-.tree-group-children {
-    overflow: hidden;
+.file-tree-folder-header .folder-icon {
+    margin-right: 4px;
+    font-size: 14px;
+    flex-shrink: 0;
+    width: 16px;
+    text-align: center;
+    color: #dcb67a;
 }
 
-.tree-group-children.collapsed {
-    height: 0;
+.file-tree-folder-header .folder-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.file-tree-item {
+    display: flex;
+    align-items: center;
+    padding: 3px 8px;
+    padding-left: calc(8px + var(--depth, 0) * 16px);
+    cursor: pointer;
+    font-size: 13px;
+    color: var(--fg-primary);
+    user-select: none;
+    white-space: nowrap;
+}
+
+.file-tree-item:hover {
+    background: var(--bg-hover);
+}
+
+.file-tree-item.active {
+    background: var(--bg-active);
+}
+
+.file-tree-item .file-icon {
+    margin-right: 4px;
+    font-size: 14px;
+    flex-shrink: 0;
+    width: 16px;
+    text-align: center;
+    color: #519aba;
+}
+
+.file-tree-item .file-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* Rename input */
+.rename-input {
+    background: var(--bg-input);
+    border: 1px solid var(--accent);
+    color: var(--fg-primary);
+    font-size: 13px;
+    font-family: inherit;
+    padding: 1px 4px;
+    outline: none;
+    width: calc(100% - 28px);
+    min-width: 40px;
+}
+
+/* Context Menus */
+.context-menu {
+    position: fixed;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-light);
+    border-radius: 4px;
+    padding: 4px 0;
+    min-width: 160px;
+    z-index: 10000;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+    display: none;
+}
+
+.context-menu.visible {
+    display: block;
+}
+
+.context-menu-item {
+    padding: 4px 24px;
+    font-size: 12px;
+    color: var(--fg-primary);
+    cursor: pointer;
+    user-select: none;
+    white-space: nowrap;
+}
+
+.context-menu-item:hover {
+    background: var(--accent);
+    color: white;
+}
+
+.context-menu-separator {
+    height: 1px;
+    background: var(--border);
+    margin: 4px 0;
 }
 
 /* ---------- Sidebar Sash (vertical) ---------- */

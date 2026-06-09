@@ -1,5 +1,5 @@
 /**
- * Cifa Script Playground 主应用 — VSCode-Inspired Multi-Tab Layout
+ * Cifa Script Playground — VSCode-Inspired Multi-Tab Layout with File Explorer
  */
 
 import CifaModule from '../cifa.js';
@@ -10,11 +10,10 @@ import CifaModule from '../cifa.js';
 const ICONS = {
     file: '<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M3.5 1h7.09L14 4.41V14a1 1 0 01-1 1h-9a1 1 0 01-1-1V2a1 1 0 011-1zm7.09 1L12 3.41H11a.5.5 0 01-.5-.5V1.59zM4 9h8v1H4V9zm0 2.5h8v1H4v-1zM4 11.5h8V13H4v-1.5z"/></svg>',
     error: '<svg width="14" height="14" viewBox="0 0 16 16" fill="#f48771"><circle cx="8" cy="8" r="7" fill="none" stroke="#f48771" stroke-width="1.5"/><path d="M5.5 5.5l5 5M10.5 5.5l-5 5" stroke="#f48771" stroke-width="1.5"/></svg>',
-    chevron: '▶',
 };
 
 /* =========================================================
-   Example Data (grouped for sidebar tree)
+   Example Data (for toolbar dropdown)
    ========================================================= */
 const EXAMPLE_GROUPS = [
     {
@@ -99,20 +98,147 @@ const EXAMPLE_GROUPS = [
     },
 ];
 
+const EXAMPLES_MAP = new Map();
+for (const g of EXAMPLE_GROUPS) for (const i of g.items) EXAMPLES_MAP.set(i.id, i);
+
 /* =========================================================
-   Flatten examples for quick lookup
+   Unique ID Generator
    ========================================================= */
-function buildExamplesMap() {
-    const map = new Map();
-    for (const group of EXAMPLE_GROUPS) {
-        for (const item of group.items) {
-            map.set(item.id, item);
-        }
+let _idCounter = 0;
+function nextId() { return 'f_' + (++_idCounter); }
+
+/* =========================================================
+   File Tree Data Model
+   ========================================================= */
+class FileNode {
+    constructor(name, type, content = '') {
+        this.id = nextId();
+        this.name = name;
+        this.type = type; // 'file' | 'folder'
+        this.content = type === 'file' ? content : '';
+        this.children = type === 'folder' ? [] : null;
+        this.parent = null;
     }
-    return map;
 }
 
-const EXAMPLES_MAP = buildExamplesMap();
+class FileSystem {
+    constructor() {
+        this.root = new FileNode('workspace', 'folder');
+        // Add default main.c
+        const mainFile = new FileNode('main.c', 'file', 'println("Hello, Cifa Script!");\n\nreturn 0;');
+        mainFile.parent = this.root;
+        this.root.children.push(mainFile);
+    }
+
+    findNode(id, node = this.root) {
+        if (node.id === id) return node;
+        if (node.children) {
+            for (const child of node.children) {
+                const found = this.findNode(id, child);
+                if (found) return found;
+            }
+        }
+        return null;
+    }
+
+    isFolder(id) {
+        const node = this.findNode(id);
+        return node && node.type === 'folder';
+    }
+
+    addFile(parentId, name, content = '') {
+        const parent = this.findNode(parentId);
+        if (!parent || parent.type !== 'folder') return null;
+        // Check duplicate name
+        if (parent.children.some(c => c.name === name && c.type === 'file')) return null;
+        const file = new FileNode(name, 'file', content);
+        file.parent = parent;
+        parent.children.push(file);
+        // Sort: folders first, then files, alphabetically
+        this.sortChildren(parent);
+        return file;
+    }
+
+    addFolder(parentId, name) {
+        const parent = this.findNode(parentId);
+        if (!parent || parent.type !== 'folder') return null;
+        if (parent.children.some(c => c.name === name && c.type === 'folder')) return null;
+        const folder = new FileNode(name, 'folder');
+        folder.parent = parent;
+        parent.children.push(folder);
+        this.sortChildren(parent);
+        return folder;
+    }
+
+    deleteNode(id) {
+        const node = this.findNode(id);
+        if (!node || !node.parent) return false;
+        const idx = node.parent.children.indexOf(node);
+        if (idx === -1) return false;
+        node.parent.children.splice(idx, 1);
+        return true;
+    }
+
+    renameNode(id, newName) {
+        const node = this.findNode(id);
+        if (!node || !node.parent) return false;
+        // Check duplicate
+        if (node.parent.children.some(c => c.name === newName && c.id !== id)) return false;
+        node.name = newName;
+        return true;
+    }
+
+    getPath(id, node = this.root) {
+        if (node.id === id) return node.name;
+        if (node.children) {
+            for (const child of node.children) {
+                const p = this.getPath(id, child);
+                if (p !== null) return node.name === 'workspace' ? p : node.name + '/' + p;
+            }
+        }
+        return null;
+    }
+
+    collectFiles(node = this.root, prefix = '') {
+        const files = [];
+        if (node.type === 'file') {
+            files.push({ path: prefix + node.name, content: node.content });
+        }
+        if (node.children) {
+            const dir = prefix;
+            for (const child of node.children) {
+                if (child.type === 'folder') {
+                    files.push(...this.collectFiles(child, dir + child.name + '/'));
+                } else {
+                    files.push({ path: dir + child.name, content: child.content });
+                }
+            }
+        }
+        return files;
+    }
+
+    sortChildren(node) {
+        if (!node.children) return;
+        node.children.sort((a, b) => {
+            if (a.type !== b.type) return a.type === 'folder' ? -1 : 1;
+            return a.name.localeCompare(b.name);
+        });
+    }
+
+    getUniqueName(parentId, baseName, type) {
+        const parent = this.findNode(parentId);
+        if (!parent) return baseName;
+        const names = new Set(parent.children.filter(c => c.type === type).map(c => c.name));
+        if (!names.has(baseName)) return baseName;
+        // Try adding number suffix
+        const dot = baseName.lastIndexOf('.');
+        const namePart = dot > 0 ? baseName.substring(0, dot) : baseName;
+        const ext = dot > 0 ? baseName.substring(dot) : '';
+        let i = 2;
+        while (names.has(namePart + i + ext)) i++;
+        return namePart + i + ext;
+    }
+}
 
 /* =========================================================
    Tab Model
@@ -122,12 +248,12 @@ const DEFAULT_PROBLEMS_HTML = '<div class="empty-state" id="problems-empty"><div
 
 let _tabCounter = 0;
 
-function createTabModel(name, exampleId, code) {
+function createTabModel(name, fileId, code) {
     _tabCounter++;
     return {
         id: 'tab_' + _tabCounter,
         name: name || ('Untitled-' + _tabCounter),
-        exampleId: exampleId,
+        fileId: fileId,
         code: code || '',
         originalCode: code || '',
         modified: false,
@@ -137,6 +263,38 @@ function createTabModel(name, exampleId, code) {
         activeBottomTab: 'output',
         editorViewState: null,
     };
+}
+
+/* =========================================================
+   Context Menu Helper
+   ========================================================= */
+class ContextMenu {
+    constructor(elementId) {
+        this.el = document.getElementById(elementId);
+        this._hideOnClick = () => this.hide();
+    }
+
+    show(x, y, onAction) {
+        this.el.style.left = x + 'px';
+        this.el.style.top = y + 'px';
+        this.el.classList.add('visible');
+        this._onAction = onAction;
+        // Bind item clicks
+        this.el.querySelectorAll('.context-menu-item').forEach(item => {
+            item.onclick = (e) => {
+                e.stopPropagation();
+                this.hide();
+                if (this._onAction) this._onAction(item.dataset.action);
+            };
+        });
+        // Close on any click outside
+        setTimeout(() => document.addEventListener('click', this._hideOnClick), 0);
+    }
+
+    hide() {
+        this.el.classList.remove('visible');
+        document.removeEventListener('click', this._hideOnClick);
+    }
 }
 
 /* =========================================================
@@ -150,12 +308,26 @@ class CifaPlayground {
         this.lintTimeout = null;
         this.lintDelay = 500;
 
+        this.fs = new FileSystem();
+
         // Multi-tab state
         this.tabs = [];
         this.activeTabId = null;
 
-        // Suppress content-change modified tracking during programmatic setValue
         this._suppressContentChange = false;
+
+        // Expanded folder state
+        this.expandedFolders = new Set();
+        this.expandedFolders.add(this.fs.root.id); // root always expanded
+
+        // Context menus
+        this.fileContextMenu = new ContextMenu('context-menu-file');
+        this.folderContextMenu = new ContextMenu('context-menu-folder');
+        this.tabContextMenu = new ContextMenu('context-menu-tab');
+
+        // Track context menu target
+        this._contextTargetId = null;
+        this._contextTabId = null;
     }
 
     /* ---- Bootstrap ---- */
@@ -202,7 +374,7 @@ class CifaPlayground {
             require(['vs/editor/editor.main'], () => {
                 monaco.languages.register({ id: 'cifa' });
                 monaco.languages.setMonarchTokensProvider('cifa', {
-                    keywords: ['auto', 'break', 'case', 'continue', 'default', 'do', 'else', 'for', 'if', 'return', 'struct', 'switch', 'while', 'int', 'float', 'double', 'string', 'char', 'true', 'false'],
+                    keywords: ['auto', 'break', 'case', 'continue', 'default', 'do', 'else', 'for', 'if', 'return', 'struct', 'switch', 'while', 'int', 'float', 'double', 'string', 'char', 'true', 'false', 'include'],
                     operators: ['=', '>', '<', '!', '~', '?', ':', '==', '<=', '>=', '!=', '&&', '||', '++', '--', '+', '-', '*', '/', '&', '|', '^', '%', '<<', '>>', '+=', '-=', '*=', '/=', '&=', '|=', '^=', '%='],
                     tokenizer: {
                         root: [
@@ -235,14 +407,14 @@ class CifaPlayground {
 
                 this.editor.onDidChangeModelContent(() => {
                     this.scheduleLint();
-                    // Skip modified tracking during programmatic setValue (activateTab)
                     if (this._suppressContentChange) return;
-                    // Mark current tab as modified
                     const tab = this.getActiveTab();
                     if (tab) {
                         const currentCode = this.editor.getValue();
                         tab.modified = (currentCode !== tab.originalCode);
                         tab.code = currentCode;
+                        // Sync to file tree
+                        this.syncTabToFile(tab);
                         this.renderTabs();
                     }
                 });
@@ -261,20 +433,21 @@ class CifaPlayground {
 
     /* ---- UI Initialization ---- */
     initUI() {
-        this.buildSidebar();
+        this.renderFileTree();
         this.populateSelect();
         this.bindToolbar();
         this.bindBottomTabs();
         this.bindActivityBar();
         this.bindPanelToggle();
         this.bindTabBarDoubleClick();
+        this.bindNewFileFolderButtons();
+        this.bindContextMenuHide();
 
-        // Create initial tab with first example
-        const firstItem = EXAMPLE_GROUPS[0].items[0];
-        const tab = createTabModel(firstItem.name, firstItem.id, firstItem.code);
-        tab.modified = false;
-        this.tabs.push(tab);
-        this.activateTab(tab.id, true);
+        // Open default main.c
+        const mainNode = this.fs.root.children.find(c => c.name === 'main.c');
+        if (mainNode) {
+            this.openFile(mainNode.id);
+        }
     }
 
     /* ---- Get active tab ---- */
@@ -282,36 +455,15 @@ class CifaPlayground {
         return this.tabs.find(t => t.id === this.activeTabId) || null;
     }
 
-    /* ---- Build Sidebar Tree ---- */
-    buildSidebar() {
-        const container = document.getElementById('sidebar-tree');
-        container.innerHTML = '';
+    /* ---- Convert JS array to Emscripten VectorString ---- */
+    toVectorString(arr) {
+        const v = new this.cifaModule.VectorString();
+        for (const s of arr) v.push_back(s);
+        return v;
+    }
 
-        for (const group of EXAMPLE_GROUPS) {
-            const header = document.createElement('div');
-            header.className = 'tree-group-header';
-            header.innerHTML = `<span class="chevron">${ICONS.chevron}</span>${this.escapeHtml(group.name)}`;
-            container.appendChild(header);
-
-            const children = document.createElement('div');
-            children.className = 'tree-group-children';
-
-            for (const item of group.items) {
-                const el = document.createElement('div');
-                el.className = 'tree-item';
-                el.dataset.id = item.id;
-                el.innerHTML = `<span class="tree-icon">${ICONS.file}</span>${this.escapeHtml(item.name)}`;
-                el.addEventListener('click', () => this.openExample(item.id));
-                children.appendChild(el);
-            }
-
-            container.appendChild(children);
-
-            header.addEventListener('click', () => {
-                header.classList.toggle('collapsed');
-                children.classList.toggle('collapsed');
-            });
-        }
+    disposeVectorString(...vecs) {
+        for (const v of vecs) this.disposeEmbind(v);
     }
 
     /* ---- Populate Toolbar Select ---- */
@@ -344,10 +496,28 @@ class CifaPlayground {
         const select = document.getElementById('example-select');
         select.onchange = () => {
             if (select.value) {
-                this.openExample(select.value);
+                this.openExampleAsFile(select.value);
                 select.value = '';
             }
         };
+    }
+
+    /* ---- Bind New File/Folder Buttons ---- */
+    bindNewFileFolderButtons() {
+        document.getElementById('btn-new-file').onclick = () => this.createNewFile(this.fs.root.id);
+        document.getElementById('btn-new-folder').onclick = () => this.createNewFolder(this.fs.root.id);
+    }
+
+    /* ---- Bind context menu hide on scroll/resize ---- */
+    bindContextMenuHide() {
+        const hideAll = () => {
+            this.fileContextMenu.hide();
+            this.folderContextMenu.hide();
+            this.tabContextMenu.hide();
+        };
+        document.getElementById('file-tree').addEventListener('scroll', hideAll);
+        window.addEventListener('resize', hideAll);
+        document.addEventListener('keydown', (e) => { if (e.key === 'Escape') hideAll(); });
     }
 
     /* ---- Bind Bottom Tabs ---- */
@@ -359,10 +529,10 @@ class CifaPlayground {
 
     /* ---- Bind Activity Bar ---- */
     bindActivityBar() {
-        document.getElementById('activity-examples').addEventListener('click', () => {
+        document.getElementById('activity-explorer').addEventListener('click', () => {
             const sidebar = document.getElementById('sidebar');
             const sash = document.getElementById('sash-sidebar');
-            const activityItem = document.getElementById('activity-examples');
+            const activityItem = document.getElementById('activity-explorer');
 
             const isHidden = sidebar.classList.toggle('hidden');
             sash.style.display = isHidden ? 'none' : '';
@@ -384,58 +554,117 @@ class CifaPlayground {
     bindTabBarDoubleClick() {
         const tabBar = document.getElementById('editor-tabs-bar');
         tabBar.addEventListener('dblclick', (e) => {
-            // Only trigger on the tab bar background, not on tabs themselves
             if (e.target === tabBar || e.target.closest('.editor-tab') === null) {
-                this.createNewUntitledTab();
+                this.createNewFile(this.fs.root.id);
             }
         });
     }
 
     /* =========================================================
-       Multi-Tab Core Logic
+       Open Example as File (from dropdown)
        ========================================================= */
-
-    /* ---- Open Example (sidebar / select) ---- */
-    openExample(exampleId) {
+    openExampleAsFile(exampleId) {
         const item = EXAMPLES_MAP.get(exampleId);
         if (!item) return;
 
-        // If the example is already open in an existing tab, just switch to it
-        const existingTab = this.tabs.find(t => t.exampleId === exampleId && !t.modified);
+        // Add .c extension
+        let fileName = item.name + '.c';
+
+        // Check if a file with this name already exists in root
+        const existing = this.fs.root.children.find(c => c.type === 'file' && c.name === fileName);
+        if (existing) {
+            // Update existing file content to the example code
+            existing.content = item.code;
+            // Close existing tab so openFile creates a fresh one with updated content
+            const existingTab = this.tabs.find(t => t.fileId === existing.id);
+            if (existingTab) {
+                this.closeTab(existingTab.id);
+            }
+            this.openFile(existing.id);
+        } else {
+            // Create new file in root with unique name
+            fileName = this.fs.getUniqueName(this.fs.root.id, fileName, 'file');
+            const fileNode = this.fs.addFile(this.fs.root.id, fileName, item.code);
+            if (fileNode) {
+                this.openFile(fileNode.id);
+                this.renderFileTree();
+            }
+        }
+    }
+
+    /* =========================================================
+       File Explorer Operations
+       ========================================================= */
+
+    /* ---- Create New File ---- */
+    createNewFile(parentId) {
+        const name = this.fs.getUniqueName(parentId, 'untitled.c', 'file');
+        const fileNode = this.fs.addFile(parentId, name, '');
+        if (fileNode) {
+            // Expand parent
+            this.expandedFolders.add(parentId);
+            this.renderFileTree();
+            this.openFile(fileNode.id);
+            // Start rename
+            this.startRename(fileNode.id);
+        }
+    }
+
+    /* ---- Create New Folder ---- */
+    createNewFolder(parentId) {
+        const name = this.fs.getUniqueName(parentId, 'newFolder', 'folder');
+        const folderNode = this.fs.addFolder(parentId, name);
+        if (folderNode) {
+            this.expandedFolders.add(parentId);
+            this.renderFileTree();
+            this.startRename(folderNode.id);
+        }
+    }
+
+    /* ---- Open File in Tab ---- */
+    openFile(fileId) {
+        // Check if already open
+        const existingTab = this.tabs.find(t => t.fileId === fileId);
         if (existingTab) {
             this.activateTab(existingTab.id);
             return;
         }
 
-        // Current tab is unmodified → replace its content
-        const currentTab = this.getActiveTab();
-        if (currentTab && !currentTab.modified) {
-            currentTab.exampleId = exampleId;
-            currentTab.name = item.name;
-            currentTab.code = item.code;
-            currentTab.originalCode = item.code;
-            currentTab.modified = false;
-            currentTab.outputHtml = DEFAULT_OUTPUT_HTML;
-            currentTab.problemsHtml = DEFAULT_PROBLEMS_HTML;
-            currentTab.errorCount = 0;
-            currentTab.activeBottomTab = 'output';
-            currentTab.editorViewState = null;
-            this.activateTab(currentTab.id, true);
-            return;
+        const node = this.fs.findNode(fileId);
+        if (!node || node.type !== 'file') return;
+
+        const fileContent = node.content;
+        const tab = createTabModel(node.name, node.id, fileContent);
+        tab.originalCode = fileContent;
+        this.tabs.push(tab);
+        this.activeTabId = tab.id;
+
+        // Set editor content directly (skip activateTab to avoid state issues)
+        this._suppressContentChange = true;
+        try {
+            this.editor.setValue(fileContent);
+        } finally {
+            this._suppressContentChange = false;
         }
 
-        // Current tab is modified → create a new tab
-        const newTab = createTabModel(item.name, exampleId, item.code);
-        this.tabs.push(newTab);
-        this.activateTab(newTab.id, true);
+        this.restoreBottomPanelState(tab);
+        this.scheduleLint();
+        this.renderTabs();
+        this.renderFileTree();
     }
 
-    /* ---- Create New Untitled Tab ---- */
-    createNewUntitledTab() {
-        const newTab = createTabModel(null, null, '');
-        this.tabs.push(newTab);
-        this.activateTab(newTab.id, true);
+    /* ---- Sync Tab Content to File Node ---- */
+    syncTabToFile(tab) {
+        if (!tab.fileId) return;
+        const node = this.fs.findNode(tab.fileId);
+        if (node && node.type === 'file') {
+            node.content = tab.code;
+        }
     }
+
+    /* =========================================================
+       Multi-Tab Core Logic
+       ========================================================= */
 
     /* ---- Activate Tab ---- */
     activateTab(tabId, forceRefresh = false) {
@@ -444,24 +673,17 @@ class CifaPlayground {
         if (!newTab) return;
         if (oldTab && oldTab.id === tabId && !forceRefresh) return;
 
-        // Save old tab state (only if switching to a *different* tab;
-        // when refreshing the same tab via forceRefresh, the caller has
-        // already set the new code/modified/originalCode on the tab object,
-        // so we must NOT overwrite it with the stale editor value)
+        // Save old tab state
         if (oldTab && oldTab.id !== tabId) {
             oldTab.code = this.editor.getValue();
             oldTab.editorViewState = this.editor.saveViewState();
-            // Save current bottom panel HTML
             this.saveBottomPanelState(oldTab);
         }
 
-        // Switch
         this.activeTabId = tabId;
 
-        // Suppress content-change handler from marking tab as modified during setValue
         this._suppressContentChange = true;
         try {
-            // Restore new tab editor content
             this.editor.setValue(newTab.code);
             if (newTab.editorViewState) {
                 this.editor.restoreViewState(newTab.editorViewState);
@@ -470,17 +692,10 @@ class CifaPlayground {
             this._suppressContentChange = false;
         }
 
-        // Restore bottom panel
         this.restoreBottomPanelState(newTab);
-
-        // Update Monaco markers for lint
         this.scheduleLint();
-
-        // Render tab bar
         this.renderTabs();
-
-        // Update sidebar active state
-        this.updateSidebarActiveState(newTab);
+        this.renderFileTree(); // Update active state
     }
 
     /* ---- Save Bottom Panel State ---- */
@@ -520,16 +735,14 @@ class CifaPlayground {
         const index = this.tabs.findIndex(t => t.id === tabId);
         if (index === -1) return;
 
-        // If closing the active tab, switch to a neighbor first
         if (tabId === this.activeTabId) {
-            // Determine which tab to activate next
             let nextIndex = index > 0 ? index - 1 : index + 1;
             if (nextIndex >= this.tabs.length) nextIndex = this.tabs.length - 1;
 
             this.tabs.splice(index, 1);
 
             if (this.tabs.length === 0) {
-                // All tabs closed, create a new empty one
+                // No tabs left — create an empty one
                 const newTab = createTabModel(null, null, '');
                 this.tabs.push(newTab);
                 this.activateTab(newTab.id, true);
@@ -541,6 +754,22 @@ class CifaPlayground {
             this.tabs.splice(index, 1);
             this.renderTabs();
         }
+    }
+
+    /* ---- Close Other Tabs ---- */
+    closeOtherTabs(tabId) {
+        this.tabs = this.tabs.filter(t => t.id === tabId);
+        this.activeTabId = null; // force re-activate
+        this.activateTab(tabId, true);
+    }
+
+    /* ---- Close All Tabs ---- */
+    closeAllTabs() {
+        this.tabs = [];
+        this.activeTabId = null;
+        const newTab = createTabModel(null, null, '');
+        this.tabs.push(newTab);
+        this.activateTab(newTab.id, true);
     }
 
     /* ---- Render Tabs ---- */
@@ -561,7 +790,7 @@ class CifaPlayground {
 
             const closeBtn = document.createElement('span');
             closeBtn.className = 'close-btn';
-            closeBtn.innerHTML = '×';
+            closeBtn.innerHTML = '&times;';
             closeBtn.addEventListener('click', (e) => {
                 e.stopPropagation();
                 this.closeTab(tab.id);
@@ -571,58 +800,211 @@ class CifaPlayground {
             el.appendChild(dotSpan);
             el.appendChild(closeBtn);
 
-            el.addEventListener('click', () => {
-                this.activateTab(tab.id);
+            el.addEventListener('click', () => this.activateTab(tab.id));
+
+            // Tab right-click context menu
+            el.addEventListener('contextmenu', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                this._contextTabId = tab.id;
+                this.tabContextMenu.show(e.clientX, e.clientY, (action) => {
+                    if (action === 'close') this.closeTab(this._contextTabId);
+                    else if (action === 'close-others') this.closeOtherTabs(this._contextTabId);
+                    else if (action === 'close-all') this.closeAllTabs();
+                });
             });
 
             container.appendChild(el);
         }
     }
 
-    /* ---- Update Sidebar Active State ---- */
-    updateSidebarActiveState(tab) {
-        document.querySelectorAll('.tree-item').forEach((el) => {
-            el.classList.toggle('active', el.dataset.id === tab.exampleId);
+    /* =========================================================
+       File Tree Rendering
+       ========================================================= */
+    renderFileTree() {
+        const container = document.getElementById('file-tree');
+        container.innerHTML = '';
+        this.renderTreeNode(container, this.fs.root, 0);
+    }
+
+    renderTreeNode(container, node, depth) {
+        if (node.type === 'folder') {
+            // Folder header
+            const header = document.createElement('div');
+            header.className = 'file-tree-folder-header';
+            if (!this.expandedFolders.has(node.id)) header.classList.add('collapsed');
+            header.style.setProperty('--depth', depth);
+            header.innerHTML = `<span class="folder-chevron">&#9660;</span><span class="folder-icon">${this.getFolderIcon(!this.expandedFolders.has(node.id))}</span><span class="folder-name">${this.escapeHtml(node.name)}</span>`;
+            header.dataset.id = node.id;
+
+            // Children container
+            const children = document.createElement('div');
+            children.className = 'file-tree-children';
+            if (!this.expandedFolders.has(node.id)) children.classList.add('collapsed');
+
+            // Toggle expand/collapse
+            header.addEventListener('click', (e) => {
+                // Don't toggle if clicking on rename input
+                if (e.target.classList.contains('rename-input')) return;
+                this.expandedFolders.has(node.id) ? this.expandedFolders.delete(node.id) : this.expandedFolders.add(node.id);
+                this.renderFileTree();
+            });
+
+            // Folder right-click
+            header.addEventListener('contextmenu', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                this._contextTargetId = node.id;
+                this.folderContextMenu.show(e.clientX, e.clientY, (action) => {
+                    this.handleFolderContextAction(action, node.id);
+                });
+            });
+
+            container.appendChild(header);
+
+            // Render children
+            if (node.children) {
+                for (const child of node.children) {
+                    this.renderTreeNode(children, child, depth + 1);
+                }
+            }
+            container.appendChild(children);
+        } else {
+            // File item
+            const item = document.createElement('div');
+            item.className = 'file-tree-item';
+            // Mark active if this file is in the active tab
+            const activeTab = this.getActiveTab();
+            if (activeTab && activeTab.fileId === node.id) item.classList.add('active');
+            item.style.setProperty('--depth', depth);
+            item.dataset.id = node.id;
+            item.innerHTML = `<span class="file-icon">&#128196;</span><span class="file-name">${this.escapeHtml(node.name)}</span>`;
+
+            // Single click: open file
+            item.addEventListener('click', (e) => {
+                if (e.target.classList.contains('rename-input')) return;
+                this.openFile(node.id);
+            });
+
+            // Double click: rename
+            item.addEventListener('dblclick', (e) => {
+                e.preventDefault();
+                this.startRename(node.id);
+            });
+
+            // Right-click context menu
+            item.addEventListener('contextmenu', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                this._contextTargetId = node.id;
+                this.fileContextMenu.show(e.clientX, e.clientY, (action) => {
+                    if (action === 'rename') this.startRename(node.id);
+                    else if (action === 'delete') this.deleteFileItem(node.id);
+                });
+            });
+
+            container.appendChild(item);
+        }
+    }
+
+    getFolderIcon(collapsed) {
+        return collapsed ? '📁' : '📂';
+    }
+
+    /* ---- Handle Folder Context Action ---- */
+    handleFolderContextAction(action, folderId) {
+        if (action === 'new-file') {
+            this.expandedFolders.add(folderId);
+            this.createNewFile(folderId);
+        } else if (action === 'new-folder') {
+            this.expandedFolders.add(folderId);
+            this.createNewFolder(folderId);
+        } else if (action === 'rename') {
+            this.startRename(folderId);
+        } else if (action === 'delete') {
+            this.deleteFileItem(folderId);
+        }
+    }
+
+    /* ---- Start Rename ---- */
+    startRename(nodeId) {
+        const node = this.fs.findNode(nodeId);
+        if (!node) return;
+
+        // Find the DOM element
+        const el = document.querySelector(`[data-id="${nodeId}"]`);
+        if (!el) return;
+
+        const nameSpan = el.querySelector('.file-name, .folder-name');
+        if (!nameSpan) return;
+
+        const input = document.createElement('input');
+        input.type = 'text';
+        input.className = 'rename-input';
+        input.value = node.name;
+
+        nameSpan.replaceWith(input);
+        input.focus();
+        // Select name without extension for files
+        if (node.type === 'file') {
+            const dot = node.name.lastIndexOf('.');
+            if (dot > 0) input.setSelectionRange(0, dot);
+            else input.select();
+        } else {
+            input.select();
+        }
+
+        const commitRename = () => {
+            let newName = input.value.trim();
+            if (newName && newName !== node.name) {
+                if (!this.fs.renameNode(nodeId, newName)) {
+                    // Duplicate name — revert
+                    newName = node.name;
+                }
+                node.name = newName;
+            }
+            // Update tab name if file is open
+            const tab = this.tabs.find(t => t.fileId === nodeId);
+            if (tab) {
+                tab.name = node.name;
+                this.renderTabs();
+            }
+            this.renderFileTree();
+        };
+
+        input.addEventListener('blur', commitRename);
+        input.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') { e.preventDefault(); input.blur(); }
+            if (e.key === 'Escape') { input.value = node.name; input.blur(); }
         });
     }
 
-    /* ---- Select Bottom Tab ---- */
-    selectBottomTab(tabName) {
-        document.querySelectorAll('.bottom-tab').forEach((t) => t.classList.remove('active'));
-        document.querySelectorAll('.bottom-panel-view').forEach((v) => v.classList.remove('active'));
+    /* ---- Delete File/Folder ---- */
+    deleteFileItem(nodeId) {
+        const node = this.fs.findNode(nodeId);
+        if (!node) return;
 
-        const tab = document.querySelector(`.bottom-tab[data-tab="${tabName}"]`);
-        const view = document.getElementById(`view-${tabName}`);
-        if (tab) tab.classList.add('active');
-        if (view) view.classList.add('active');
-
-        // Also update the active tab model
-        const activeTab = this.getActiveTab();
-        if (activeTab) activeTab.activeBottomTab = tabName;
-    }
-
-    /* ---- Render Output View (for clear button) ---- */
-    renderOutputView() {
-        const tab = this.getActiveTab();
-        if (!tab) return;
-        const view = document.getElementById('view-output');
-        if (view) view.innerHTML = tab.outputHtml;
-    }
-
-    /* ---- Status Bar ---- */
-    updateStatus(ready, message) {
-        const dot = document.getElementById('status-dot');
-        const text = document.getElementById('status-text');
-
-        dot.classList.remove('loading');
-        if (ready) {
-            dot.style.background = '#4caf50';
-            text.textContent = '就绪';
-            return;
+        // Close any tabs that reference this file or files inside this folder
+        const fileIds = new Set();
+        if (node.type === 'file') {
+            fileIds.add(nodeId);
+        } else {
+            // Collect all file IDs in this folder
+            const collect = (n) => {
+                if (n.type === 'file') fileIds.add(n.id);
+                if (n.children) n.children.forEach(collect);
+            };
+            collect(node);
         }
 
-        dot.style.background = '#f48771';
-        text.textContent = message ? `初始化失败: ${message}` : '初始化失败';
+        // Close matching tabs
+        for (const fid of fileIds) {
+            const tab = this.tabs.find(t => t.fileId === fid);
+            if (tab) this.closeTab(tab.id);
+        }
+
+        this.fs.deleteNode(nodeId);
+        this.renderFileTree();
     }
 
     /* =========================================================
@@ -636,7 +1018,22 @@ class CifaPlayground {
     async lint() {
         if (!this.isReady) return;
         const code = this.editor.getValue();
-        const rawErrors = this.cifaModule.lint(code);
+        const tab = this.getActiveTab();
+
+        let rawErrors;
+        if (tab && tab.fileId) {
+            // Multi-file lint: collect all files, write to VFS, lint with includes
+            const allFiles = this.fs.collectFiles();
+            const paths = this.toVectorString(allFiles.map(f => f.path));
+            const contents = this.toVectorString(allFiles.map(f => f.content));
+            const node = this.fs.findNode(tab.fileId);
+            const filename = node ? node.name : 'main.c';
+            rawErrors = this.cifaModule.lintWithFiles(code, filename, paths, contents);
+            this.disposeVectorString(paths, contents);
+        } else {
+            rawErrors = this.cifaModule.lint(code);
+        }
+
         const errors = this.normalizeErrors(rawErrors);
         this.disposeEmbind(rawErrors);
         this.updateProblems(errors);
@@ -687,13 +1084,15 @@ class CifaPlayground {
         if (!errors.length) {
             view.innerHTML = '<div class="empty-state" id="problems-empty"><div>暂无问题</div></div>';
         } else {
+            const tab = this.getActiveTab();
+            const fileName = tab ? tab.name : 'main.c';
             let html = '<table class="problems-table"><thead><tr><th></th><th>描述</th><th>文件</th><th>行</th></tr></thead><tbody>';
             for (let i = 0; i < errors.length; i++) {
                 const e = errors[i];
                 html += `<tr data-line="${e.line}" data-col="${e.col}">` +
                     `<td>${ICONS.error}</td>` +
                     `<td class="problem-message">${this.escapeHtml(e.message)}</td>` +
-                    `<td class="problem-file">main.cifa</td>` +
+                    `<td class="problem-file">${this.escapeHtml(fileName)}</td>` +
                     `<td class="problem-line">${e.line}</td></tr>`;
             }
             html += '</tbody></table>';
@@ -735,21 +1134,37 @@ class CifaPlayground {
     }
 
     /* =========================================================
-       Run
+       Run (Multi-File Support)
        ========================================================= */
     async run() {
         if (!this.isReady) return;
 
-        // Clear output and problems before running
         this.clearOutput();
         this.updateProblems([]);
 
-        const code = this.editor.getValue();
+        const tab = this.getActiveTab();
+        if (!tab) return;
+
+        // Sync current editor content to file tree
+        this.syncTabToFile(tab);
+
+        const code = tab.code;
         const startTime = performance.now();
         let result;
 
         try {
-            result = this.cifaModule.execute(code);
+            if (tab.fileId) {
+                // Multi-file execution: collect all files, write to VFS
+                const allFiles = this.fs.collectFiles();
+                const paths = this.toVectorString(allFiles.map(f => f.path));
+                const contents = this.toVectorString(allFiles.map(f => f.content));
+                const node = this.fs.findNode(tab.fileId);
+                const filename = node ? node.name : 'main.c';
+                result = this.cifaModule.executeWithFiles(code, filename, paths, contents);
+                this.disposeVectorString(paths, contents);
+            } else {
+                result = this.cifaModule.execute(code);
+            }
         } catch (err) {
             result = { success: false, runtimeError: 'Execution crashed: ' + err.message, errors: [], value: '', output: '' };
         }
@@ -886,6 +1301,46 @@ class CifaPlayground {
             sidebar.style.width = '260px';
             if (this.editor) this.editor.layout();
         });
+    }
+
+    /* =========================================================
+       Bottom Tabs
+       ========================================================= */
+    selectBottomTab(tabName) {
+        document.querySelectorAll('.bottom-tab').forEach((t) => t.classList.remove('active'));
+        document.querySelectorAll('.bottom-panel-view').forEach((v) => v.classList.remove('active'));
+
+        const tab = document.querySelector(`.bottom-tab[data-tab="${tabName}"]`);
+        const view = document.getElementById(`view-${tabName}`);
+        if (tab) tab.classList.add('active');
+        if (view) view.classList.add('active');
+
+        const activeTab = this.getActiveTab();
+        if (activeTab) activeTab.activeBottomTab = tabName;
+    }
+
+    /* ---- Render Output View ---- */
+    renderOutputView() {
+        const tab = this.getActiveTab();
+        if (!tab) return;
+        const view = document.getElementById('view-output');
+        if (view) view.innerHTML = tab.outputHtml;
+    }
+
+    /* ---- Status Bar ---- */
+    updateStatus(ready, message) {
+        const dot = document.getElementById('status-dot');
+        const text = document.getElementById('status-text');
+
+        dot.classList.remove('loading');
+        if (ready) {
+            dot.style.background = '#4caf50';
+            text.textContent = '就绪';
+            return;
+        }
+
+        dot.style.background = '#f48771';
+        text.textContent = message ? `初始化失败: ${message}` : '初始化失败';
     }
 
     /* =========================================================

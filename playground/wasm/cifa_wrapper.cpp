@@ -1,7 +1,9 @@
 #include <emscripten/bind.h>
+#include <emscripten.h>
 #include "Cifa.h"
 #include <sstream>
 #include <iostream>
+#include <fstream>
 
 using namespace emscripten;
 using namespace cifa;
@@ -130,6 +132,87 @@ std::vector<std::string> getBuiltinFunctions() {
     };
 }
 
+// 辅助函数：将文件列表写入 Emscripten VFS
+static void writeToVFS(const std::vector<std::string>& paths, const std::vector<std::string>& contents) {
+    emscripten_run_script("try{FS.mkdirTree('/workspace')}catch(e){}");
+    for (size_t i = 0; i < paths.size(); ++i) {
+        std::string fullPath = std::string("/workspace/") + paths[i];
+        // 确保父目录存在
+        size_t lastSlash = fullPath.find_last_of('/');
+        if (lastSlash != std::string::npos) {
+            std::string parentDir = fullPath.substr(0, lastSlash);
+            std::string js = std::string("try{FS.mkdirTree('") + parentDir + "')}catch(e){}";
+            emscripten_run_script(js.c_str());
+        }
+        std::ofstream ofs(fullPath);
+        if (ofs.is_open()) {
+            ofs << contents[i];
+            ofs.close();
+        }
+    }
+}
+
+// 将虚拟文件写入 Emscripten VFS，然后执行（支持 #include）
+ExecuteResult executeWithFiles(const std::string& code, const std::string& filename, const std::vector<std::string>& paths, const std::vector<std::string>& contents) {
+    writeToVFS(paths, contents);
+
+    // 重定向 cout
+    std::streambuf* oldCoutStreamBuf = std::cout.rdbuf();
+    std::ostringstream capturedOutput;
+    std::cout.rdbuf(capturedOutput.rdbuf());
+
+    Cifa cifa;
+    cifa.max_loop_iterations = 1000000;
+    cifa.max_call_depth = 500;
+    cifa.set_output_error(false);
+
+    std::string fullPath = std::string("/workspace/") + filename;
+    Object obj = cifa.run_script_set_filename(code, fullPath);
+
+    std::cout.rdbuf(oldCoutStreamBuf);
+
+    ExecuteResult result;
+    result.output = capturedOutput.str();
+
+    if (cifa.has_error()) {
+        result.success = false;
+        result.errors = convertErrors(cifa.get_errors());
+        return result;
+    }
+
+    if (obj.getSpecialType() == "Error") {
+        result.success = false;
+        auto runtimeErrors = convertErrors(cifa.get_errors());
+        if (!runtimeErrors.empty()) {
+            result.errors = runtimeErrors;
+            result.runtimeError = runtimeErrors.front().message;
+        } else {
+            std::string runtimeErr = cifa.get_runtime_error();
+            result.runtimeError = runtimeErr.empty() ? "Runtime error occurred" : runtimeErr;
+        }
+        return result;
+    }
+
+    result.success = true;
+    result.value = objectToString(obj);
+    return result;
+}
+
+// 将虚拟文件写入 Emscripten VFS，然后进行语法检查（支持 #include）
+std::vector<JsErrorMessage> lintWithFiles(const std::string& code, const std::string& filename, const std::vector<std::string>& paths, const std::vector<std::string>& contents) {
+    writeToVFS(paths, contents);
+
+    Cifa cifa;
+    cifa.set_output_error(false);
+    cifa.max_loop_iterations = 100;
+    cifa.max_call_depth = 10;
+
+    std::string fullPath = std::string("/workspace/") + filename;
+    cifa.run_script_set_filename(code, fullPath);
+
+    return convertErrors(cifa.get_errors());
+}
+
 EMSCRIPTEN_BINDINGS(cifa_module) {
     // 注册错误信息结构体
     value_object<JsErrorMessage>("JsErrorMessage")
@@ -153,4 +236,6 @@ EMSCRIPTEN_BINDINGS(cifa_module) {
     function("execute", &execute);
     function("lint", &lint);
     function("getBuiltinFunctions", &getBuiltinFunctions);
+    function("executeWithFiles", &executeWithFiles);
+    function("lintWithFiles", &lintWithFiles);
 }
