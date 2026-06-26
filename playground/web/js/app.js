@@ -676,6 +676,12 @@ class CifaPlayground {
         return this.tabs.find(t => t.id === this.activeTabId) || null;
     }
 
+    /* ---- Switch to tab by file name ---- */
+    switchToTabByName(fileName) {
+        const tab = this.tabs.find(t => t.name === fileName);
+        if (tab) this.activateTab(tab.id);
+    }
+
     /* ---- Convert JS array to Emscripten VectorString ---- */
     toVectorString(arr) {
         const v = new this.cifaModule.VectorString();
@@ -1233,19 +1239,25 @@ class CifaPlayground {
     }
 
     normalizeErrors(errors) {
+        const mapError = (e) => ({
+            filename: String(e.filename || ''),
+            line: Number(e.line) || 1,
+            col: Number(e.col) || 1,
+            message: String(e.message || 'Unknown error')
+        });
         if (!errors) return [];
         if (Array.isArray(errors)) {
-            return errors.map((e) => ({ line: Number(e.line) || 1, col: Number(e.col) || 1, message: String(e.message || 'Unknown error') }));
+            return errors.map(mapError);
         }
         if (typeof errors.size === 'function' && typeof errors.get === 'function') {
             const arr = [];
             const sz = errors.size();
-            for (let i = 0; i < sz; i++) { const e = errors.get(i); arr.push({ line: Number(e.line) || 1, col: Number(e.col) || 1, message: String(e.message || 'Unknown error') }); }
+            for (let i = 0; i < sz; i++) { arr.push(mapError(errors.get(i))); }
             return arr;
         }
         if (typeof errors.length === 'number') {
             const arr = [];
-            for (let i = 0; i < errors.length; i++) { const e = errors[i]; arr.push({ line: Number(e.line) || 1, col: Number(e.col) || 1, message: String(e.message || 'Unknown error') }); }
+            for (let i = 0; i < errors.length; i++) { arr.push(mapError(errors[i])); }
             return arr;
         }
         return [];
@@ -1260,7 +1272,12 @@ class CifaPlayground {
     /* ---- Update Problems Panel ---- */
     updateProblems(errors) {
         errors = errors || [];
-        const markers = errors.map((e) => ({
+
+        // 只对当前活动文件的错误设置 Monaco 标记（其他文件的行号在当前编辑器中无意义）
+        const tab = this.getActiveTab();
+        const currentFileName = tab ? tab.name : '';
+        const currentFileErrors = errors.filter((e) => !e.filename || e.filename === '<script>' || e.filename === currentFileName);
+        const markers = currentFileErrors.map((e) => ({
             startLineNumber: e.line, startColumn: e.col,
             endLineNumber: e.line, endColumn: e.col + 1,
             message: e.message, severity: monaco.MarkerSeverity.Error
@@ -1275,12 +1292,11 @@ class CifaPlayground {
         if (!errors.length) {
             view.innerHTML = '<div class="empty-state" id="problems-empty"><div>暂无问题</div></div>';
         } else {
-            const tab = this.getActiveTab();
-            const fileName = tab ? tab.name : 'main.c';
             let html = '<table class="problems-table"><thead><tr><th></th><th>描述</th><th>文件</th><th>行</th></tr></thead><tbody>';
             for (let i = 0; i < errors.length; i++) {
                 const e = errors[i];
-                html += `<tr data-line="${e.line}" data-col="${e.col}">` +
+                const fileName = (e.filename && e.filename !== '<script>') ? e.filename : (currentFileName || 'main.c');
+                html += `<tr data-line="${e.line}" data-col="${e.col}" data-file="${this.escapeHtml(fileName)}">` +
                     `<td>${ICONS.error}</td>` +
                     `<td class="problem-message">${this.escapeHtml(e.message)}</td>` +
                     `<td class="problem-file">${this.escapeHtml(fileName)}</td>` +
@@ -1293,6 +1309,11 @@ class CifaPlayground {
                 row.addEventListener('click', () => {
                     const line = parseInt(row.dataset.line, 10);
                     const col = parseInt(row.dataset.col, 10);
+                    const fileName = row.dataset.file;
+                    // 如果错误来自其他文件，先切换到该文件的标签页
+                    if (fileName && fileName !== '<script>' && fileName !== currentFileName) {
+                        this.switchToTabByName(fileName);
+                    }
                     this.editor.revealLineInCenter(line);
                     this.editor.setPosition({ lineNumber: line, column: col });
                     this.editor.focus();
@@ -1300,7 +1321,6 @@ class CifaPlayground {
             });
         }
 
-        const tab = this.getActiveTab();
         if (tab) tab.errorCount = errors.length;
     }
 

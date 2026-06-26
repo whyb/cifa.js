@@ -10,6 +10,7 @@ using namespace cifa;
 
 // 错误信息结构体（用于导出到 JS）
 struct JsErrorMessage {
+    std::string filename;
     size_t line;
     size_t col;
     std::string message;
@@ -29,7 +30,7 @@ template <typename T>
 std::vector<JsErrorMessage> convertErrors(const T& src) {
     std::vector<JsErrorMessage> dst;
     for (const auto& e : src) {
-        dst.push_back({e.line, e.col, e.message});
+        dst.push_back({e.filename, e.line, e.col, e.message});
     }
     return dst;
 }
@@ -280,6 +281,7 @@ std::vector<JsErrorMessage> lintWithFiles(const std::string& code, const std::st
 EMSCRIPTEN_BINDINGS(cifa_module) {
     // 注册错误信息结构体
     value_object<JsErrorMessage>("JsErrorMessage")
+        .field("filename", &JsErrorMessage::filename)
         .field("line", &JsErrorMessage::line)
         .field("col", &JsErrorMessage::col)
         .field("message", &JsErrorMessage::message);
