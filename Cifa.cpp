@@ -5,9 +5,19 @@
 #include <format>
 #include <iostream>
 #include <sstream>
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#else
+#include <dlfcn.h>
+#endif
 
 namespace cifa
 {
+
+static std::string normalize_path(const std::string& path);
 
 //构造函数：注册内置函数（print, println, 数学函数等）
 Cifa::Cifa()
@@ -71,6 +81,15 @@ Cifa::Cifa()
             }
             return Object(atof(d[0].toString().c_str()));
         });
+    register_function("import", [this](ObjectVector& d) -> Object
+        {
+            if (d.size() != 1)
+            {
+                set_runtime_error("function 'import' expects 1 arguments, got " + std::to_string(d.size()));
+                return Object();
+            }
+            return Object(import_module(d[0].toString()));
+        });
     //parameters["true"] = Object(1, "__");
     //parameters["false"] = Object(0, "__");
     //parameters["break"] = Object("break", "__");
@@ -85,14 +104,6 @@ Cifa::Cifa()
     };
     register_function("ifv", ifv);
     register_function("ifvalue", ifv);
-
-    register_function("pow", [](ObjectVector& x) -> Object
-        {
-            if (x.size() <= 1) { return cifa::Object(); }
-            double x0 = x[0];
-            double x1 = x[1];
-            return pow(x0, x1);
-        });
 
     register_function("max", [](ObjectVector& x) -> Object
         {
@@ -379,30 +390,61 @@ Cifa::Cifa()
             return Object(result);
         });
 
-#define REGISTER_FUNCTION(func) \
-    register_function(#func, [](ObjectVector& x) -> Object \
-        { \
-            if (x.size() == 0) { return cifa::Object(); } \
-            double x0 = x[0]; \
-            return func(x0); \
-        });
-    REGISTER_FUNCTION(abs);
-    REGISTER_FUNCTION(sqrt);
-    REGISTER_FUNCTION(round);
-    REGISTER_FUNCTION(sin);
-    REGISTER_FUNCTION(cos);
-    REGISTER_FUNCTION(tan);
-    REGISTER_FUNCTION(asin);
-    REGISTER_FUNCTION(acos);
-    REGISTER_FUNCTION(atan);
-    REGISTER_FUNCTION(sinh);
-    REGISTER_FUNCTION(cosh);
-    REGISTER_FUNCTION(tanh);
-    REGISTER_FUNCTION(exp);
-    REGISTER_FUNCTION(log);
-    REGISTER_FUNCTION(log10);
-    REGISTER_FUNCTION(ceil);
-    REGISTER_FUNCTION(floor);
+#define REGISTER_MATH1(func) register_function(#func, static_cast<double(*)(double)>(&std::func))
+#define REGISTER_MATH2(func) register_function(#func, static_cast<double(*)(double, double)>(&std::func))
+    REGISTER_MATH1(abs);
+    REGISTER_MATH1(sqrt);
+    REGISTER_MATH1(cbrt);
+    REGISTER_MATH1(round);
+    REGISTER_MATH1(trunc);
+    REGISTER_MATH1(nearbyint);
+    REGISTER_MATH1(rint);
+    REGISTER_MATH1(ceil);
+    REGISTER_MATH1(floor);
+    REGISTER_MATH1(sin);
+    REGISTER_MATH1(cos);
+    REGISTER_MATH1(tan);
+    REGISTER_MATH1(asin);
+    REGISTER_MATH1(acos);
+    REGISTER_MATH1(atan);
+    REGISTER_MATH2(atan2);
+    REGISTER_MATH1(sinh);
+    REGISTER_MATH1(cosh);
+    REGISTER_MATH1(tanh);
+    REGISTER_MATH1(exp);
+    REGISTER_MATH1(log);
+    REGISTER_MATH1(log2);
+    REGISTER_MATH1(log10);
+    REGISTER_MATH2(pow);
+    REGISTER_MATH2(hypot);
+    REGISTER_MATH2(fmod);
+    REGISTER_MATH2(remainder);
+    REGISTER_MATH1(erf);
+    REGISTER_MATH1(erfc);
+    REGISTER_MATH1(tgamma);
+    REGISTER_MATH1(lgamma);
+    REGISTER_MATH2(copysign);
+    REGISTER_MATH2(fdim);
+    REGISTER_MATH2(fmax);
+    REGISTER_MATH2(fmin);
+#undef REGISTER_MATH2
+#undef REGISTER_MATH1
+}
+
+Cifa::~Cifa()
+{
+    functions.clear();
+    for (void* module : imported_modules)
+    {
+        if (module != nullptr)
+        {
+#ifdef _WIN32
+            FreeLibrary(static_cast<HMODULE>(module));
+#else
+            dlclose(module);
+#endif
+        }
+    }
 }
 
 //从作用域栈的最内层向外查找变量，找到则返回指针，否则返回 nullptr
@@ -1933,6 +1975,95 @@ void Cifa::register_function(const std::string& name, func_type func)
     functions[name] = func;
 }
 
+bool Cifa::import_module(const std::string& path)
+{
+    if (path.empty())
+    {
+        set_runtime_error("import path is empty");
+        return false;
+    }
+
+    if (std::find(imported_module_paths.begin(), imported_module_paths.end(), path) != imported_module_paths.end())
+    {
+        return true;
+    }
+
+#ifdef _WIN32
+    HMODULE module = LoadLibraryA(path.c_str());
+    if (module == nullptr)
+    {
+        set_runtime_error("import failed: cannot load '" + path + "'");
+        return false;
+    }
+
+    auto import_func = reinterpret_cast<import_func_type>(GetProcAddress(module, "cifa_import"));
+    if (import_func == nullptr)
+    {
+        FreeLibrary(module);
+        set_runtime_error("import failed: '" + path + "' does not export cifa_import");
+        return false;
+    }
+
+    if (!import_func(this))
+    {
+        FreeLibrary(module);
+        set_runtime_error("import failed: cifa_import returned false for '" + path + "'");
+        return false;
+    }
+
+    imported_modules.push_back(module);
+    imported_module_paths.push_back(path);
+    return true;
+#else
+    void* module = dlopen(path.c_str(), RTLD_NOW);
+    if (module == nullptr)
+    {
+        const char* err = dlerror();
+        set_runtime_error("import failed: cannot load '" + path + "'" + (err != nullptr ? std::string(": ") + err : std::string()));
+        return false;
+    }
+
+    dlerror();
+    auto import_func = reinterpret_cast<import_func_type>(dlsym(module, "cifa_import"));
+    const char* symbol_error = dlerror();
+    if (symbol_error != nullptr)
+    {
+        dlclose(module);
+        set_runtime_error("import failed: '" + path + "' does not export cifa_import");
+        return false;
+    }
+
+    if (!import_func(this))
+    {
+        dlclose(module);
+        set_runtime_error("import failed: cifa_import returned false for '" + path + "'");
+        return false;
+    }
+
+    imported_modules.push_back(module);
+    imported_module_paths.push_back(path);
+    return true;
+#endif
+}
+
+void Cifa::import_literal_modules(CalUnit& c)
+{
+    if (c.type == CalUnitType::Function && c.str == "import" && !c.v.empty())
+    {
+        std::vector<CalUnit> args;
+        expand_comma(c.v[0], args);
+        if (args.size() == 1 && args[0].type == CalUnitType::String)
+        {
+            import_module(args[0].str);
+        }
+    }
+
+    for (auto& child : c.v)
+    {
+        import_literal_modules(child);
+    }
+}
+
 //注册用户自定义数据指针
 void Cifa::register_user_data(const std::string& name, void* p)
 {
@@ -1943,6 +2074,11 @@ void Cifa::register_user_data(const std::string& name, void* p)
 void Cifa::register_parameter(const std::string& name, Object o)
 {
     parameters[name] = o;
+}
+
+void Cifa::set_include_dirs(const std::vector<std::string>& dirs)
+{
+    include_dirs = dirs;
 }
 
 //获取用户自定义数据指针
@@ -1985,7 +2121,7 @@ Object Cifa::run_function(const std::string& name, std::vector<CalUnit>& vc, Sco
     }
     else
     {
-        set_runtime_error("function " + name + " is not defined");
+        set_runtime_error("function '" + name + "' is not defined");
         return Object();
     }
 }
@@ -2371,7 +2507,7 @@ void Cifa::check_cal_unit(CalUnit& c, CalUnit* father, std::unordered_map<std::s
                         || c.v[0].type != CalUnitType::Parameter
                             && !(c.v[0].type == CalUnitType::Operator && c.v[0].str == "."))
                     {
-                        add_error(c.v[0], "%s cannot be assigned", c.v[0].str.c_str());
+                        add_error(c.v[0], "'%s' cannot be assigned", c.v[0].str.c_str());
                     }
                 }
             }
@@ -2381,7 +2517,7 @@ void Cifa::check_cal_unit(CalUnit& c, CalUnit* father, std::unordered_map<std::s
                 {
                     if (c.v[0].type == CalUnitType::Parameter && !p.count(c.v[0].str))
                     {
-                        add_error(c.v[0], "parameter %s is at right of = but not been initialized", c.v[0].str.c_str());
+                        add_error(c.v[0], "parameter '%s' is at right of = but not been initialized", c.v[0].str.c_str());
                     }
                     else if (c.v[1].type == CalUnitType::Parameter)
                     {
@@ -2402,7 +2538,7 @@ void Cifa::check_cal_unit(CalUnit& c, CalUnit* father, std::unordered_map<std::s
                         }
                         if (!ok)
                         {
-                            add_error(c.v[0], "parameter %s in %s is at right of = but not been initialized", c.v[1].str.c_str(), c.v[0].str.c_str());
+                            add_error(c.v[0], "parameter '%s' in '%s' is at right of = but not been initialized", c.v[1].str.c_str(), c.v[0].str.c_str());
                         }
                     }
                 }
@@ -2453,7 +2589,7 @@ void Cifa::check_cal_unit(CalUnit& c, CalUnit* father, std::unordered_map<std::s
     {
         if (c.v.size() > 0 && c.v[0].str != "[]")
         {
-            add_error(c, "cannot calculate parameter %s with operands", c.str.c_str());
+            add_error(c, "cannot calculate parameter '%s' with operands", c.str.c_str());
         }
         //带类型前缀的独立声明（如 int i;），注册变量到作用域
         if (c.with_type)
@@ -2484,7 +2620,7 @@ void Cifa::check_cal_unit(CalUnit& c, CalUnit* father, std::unordered_map<std::s
                 //所有表达式上下文中的参数都需要初始化检查
                 if (!p.count(c.str))
                 {
-                    add_error(c, "parameter %s is at right of = but not been initialized", c.str.c_str());
+                    add_error(c, "parameter '%s' is at right of = but not been initialized", c.str.c_str());
                 }
             }
         }
@@ -2497,7 +2633,7 @@ void Cifa::check_cal_unit(CalUnit& c, CalUnit* father, std::unordered_map<std::s
             {
                 if (!p.count(c.str))
                 {
-                    add_error(c, "parameter %s is at right of = but not been initialized", c.str.c_str());
+                    add_error(c, "parameter '%s' is at right of = but not been initialized", c.str.c_str());
                 }
             }
         }
@@ -2506,21 +2642,21 @@ void Cifa::check_cal_unit(CalUnit& c, CalUnit* father, std::unordered_map<std::s
     {
         if (c.v.size() == 0)
         {
-            add_error(c, "function %s has no operands", c.str.c_str());
+            add_error(c, "function '%s' has no operands", c.str.c_str());
         }
         //内置方法名不视为未定义函数
         if (!functions.contains(c.str) && !functions2.contains(c.str))
         {
             if (!builtin_methods.contains(c.str))
             {
-                add_error(c, "function %s is not defined", c.str.c_str());
+                add_error(c, "function '%s' is not defined", c.str.c_str());
             }
         }
         else if (!functions.contains(c.str) && functions2.contains(c.str) && functions2.at(c.str).body.type == CalUnitType::None)
         {
             if (!builtin_methods.contains(c.str))
             {
-                add_error(c, "function %s is not defined", c.str.c_str());
+                add_error(c, "function '%s' is not defined", c.str.c_str());
             }
         }
     }
@@ -2787,53 +2923,36 @@ void Cifa::check_cal_unit(CalUnit& c, CalUnit* father, std::unordered_map<std::s
     }
 }
 
-//运行脚本（简化版，使用空变量表，不处理#include）
+//运行脚本，使用独立变量表；按当前目录和include搜索目录处理#include
 Object Cifa::run_script(std::string script)
 {
     errors.clear();
     clear_runtime_error();
-    std::unordered_map<std::string, Object> p;
-    return run_pipeline(std::move(script), p);
+    std::unordered_map<std::string, Object> local_params;
+    std::set<std::string> visited;
+    script = preprocess_includes(script, "<script>", ".", include_dirs, visited);
+    return run_pipeline(std::move(script), local_params);
 }
 
-//运行脚本（使用外部变量表，支持当前目录下的#include）
+//运行脚本，使用外部变量表；按当前目录和include搜索目录处理#include
 Object Cifa::run_script(std::string script, std::unordered_map<std::string, Object>& p)
 {
     errors.clear();
     clear_runtime_error();
     std::set<std::string> visited;
-    script = preprocess_includes(script, ".", visited);
+    script = preprocess_includes(script, "<script>", ".", include_dirs, visited);
     return run_pipeline(std::move(script), p);
 }
 
 //从文件运行脚本（简化版，使用空变量表）
-Object Cifa::run_script_from_file(const std::string& filename)
+Object Cifa::run_file(const std::string& filename)
 {
-    errors.clear();
-    clear_runtime_error();
-    std::ifstream ifs(filename);
-    if (!ifs.is_open())
-    {
-        add_error(1, 1, "cannot open file: %s", filename.c_str());
-        Object result = std::string("");
-        result.type1 = "Error";
-        if (output_error)
-        {
-            print_errors();
-        }
-        return result;
-    }
-    std::string str((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
-    std::set<std::string> visited;
-    visited.insert(filename);
-    std::string dir = get_directory(filename);
-    str = preprocess_includes(str, dir, visited);
-    std::unordered_map<std::string, Object> p;
-    return run_pipeline(std::move(str), p);
+    std::unordered_map<std::string, Object> local_params;
+    return run_file(filename, local_params);
 }
 
 //从文件运行脚本（使用外部变量表）
-Object Cifa::run_script_from_file(const std::string& filename, std::unordered_map<std::string, Object>& p)
+Object Cifa::run_file(const std::string& filename, std::unordered_map<std::string, Object>& p)
 {
     errors.clear();
     clear_runtime_error();
@@ -2851,35 +2970,10 @@ Object Cifa::run_script_from_file(const std::string& filename, std::unordered_ma
     }
     std::string str((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
     std::set<std::string> visited;
-    visited.insert(filename);
+    visited.insert(normalize_path(filename));
     std::string dir = get_directory(filename);
-    str = preprocess_includes(str, dir, visited);
+    str = preprocess_includes(str, normalize_path(filename), dir, include_dirs, visited);
     return run_pipeline(std::move(str), p);
-}
-
-//运行脚本，设定文件名用于解析#include（简化版，使用空变量表）
-Object Cifa::run_script_set_filename(std::string script, const std::string& filename)
-{
-    errors.clear();
-    clear_runtime_error();
-    std::set<std::string> visited;
-    visited.insert(filename);
-    std::string dir = get_directory(filename);
-    script = preprocess_includes(script, dir, visited);
-    std::unordered_map<std::string, Object> p;
-    return run_pipeline(std::move(script), p);
-}
-
-//运行脚本，设定文件名用于解析#include，使用外部变量表
-Object Cifa::run_script_set_filename(std::string script, const std::string& filename, std::unordered_map<std::string, Object>& p)
-{
-    errors.clear();
-    clear_runtime_error();
-    std::set<std::string> visited;
-    visited.insert(filename);
-    std::string dir = get_directory(filename);
-    script = preprocess_includes(script, dir, visited);
-    return run_pipeline(std::move(script), p);
 }
 
 //脚本执行管线：词法分析→语法树构建→语法检查→求值执行
@@ -2890,15 +2984,22 @@ Object Cifa::run_pipeline(std::string str, std::unordered_map<std::string, Objec
     {
         std::stringstream source_stream(str);
         std::string source_line;
+        size_t line_index = 0;
         while (std::getline(source_stream, source_line))
         {
-            runtime_source_lines.emplace_back(std::move(source_line));
+            if (line_index >= runtime_source_line_infos.size())
+            {
+                runtime_source_line_infos.push_back({ "<script>", line_index + 1, source_line });
+            }
+            runtime_source_lines.emplace_back(runtime_source_line_infos[line_index].text);
+            ++line_index;
         }
     }
 
     str += ";";    //方便处理仅有一行的情况
     auto rv = split(str);
     auto c = combine_all_cal(rv);    //结果必定是一个Union
+    import_literal_modules(c);
     //此处设定为在语法树检查不正确时，仍然尝试运行并检查执行时的错误
     //if (errors.empty())
     {
@@ -2978,6 +3079,19 @@ std::string Cifa::get_directory(const std::string& filepath)
     return ".";
 }
 
+bool Cifa::is_absolute_path(const std::string& filepath)
+{
+    if (filepath.empty())
+    {
+        return false;
+    }
+    if (filepath[0] == '/' || filepath[0] == '\\')
+    {
+        return true;
+    }
+    return filepath.size() >= 3 && ((filepath[0] >= 'A' && filepath[0] <= 'Z') || (filepath[0] >= 'a' && filepath[0] <= 'z')) && filepath[1] == ':' && (filepath[2] == '/' || filepath[2] == '\\');
+}
+
 //在语法树构建之前报告错误（无CalUnit信息）
 void Cifa::add_error(size_t line, size_t col, const char* fmt, ...)
 {
@@ -3027,7 +3141,7 @@ static std::string normalize_path(const std::string& path)
 }
 
 //预处理#include指令：递归展开所有包含的文件
-std::string Cifa::preprocess_includes(const std::string& source, const std::string& current_dir, std::set<std::string>& visited)
+std::string Cifa::preprocess_includes(const std::string& source, const std::string& current_file, const std::string& current_dir, const std::vector<std::string>& extra_include_dirs, std::set<std::string>& visited)
 {
     std::stringstream source_stream(source);
     std::string line;
@@ -3043,12 +3157,14 @@ std::string Cifa::preprocess_includes(const std::string& source, const std::stri
         if (first_non_space == std::string::npos || trimmed[first_non_space] != '#')
         {
             result += line + "\n";
+            runtime_source_line_infos.push_back({ current_file, line_num, line });
             continue;
         }
         std::string directive = trimmed.substr(first_non_space);
         if (directive.substr(0, 8) != "#include")
         {
             result += line + "\n";
+            runtime_source_line_infos.push_back({ current_file, line_num, line });
             continue;
         }
         //解析文件名
@@ -3056,6 +3172,7 @@ std::string Cifa::preprocess_includes(const std::string& source, const std::stri
         size_t filename_start = rest.find_first_not_of(" \t");
         if (filename_start == std::string::npos)
         {
+            runtime_source_line_infos.push_back({ current_file, line_num, line });
             add_error(line_num, first_non_space + 1, "#include: missing filename");
             result += "\n";
             continue;
@@ -3066,6 +3183,7 @@ std::string Cifa::preprocess_includes(const std::string& source, const std::stri
         else if (open_char == '<') close_char = '>';
         else
         {
+            runtime_source_line_infos.push_back({ current_file, line_num, line });
             add_error(line_num, first_non_space + 1, "#include: invalid syntax, expected '\"' or '<'");
             result += "\n";
             continue;
@@ -3073,38 +3191,72 @@ std::string Cifa::preprocess_includes(const std::string& source, const std::stri
         size_t filename_end = rest.find(close_char, filename_start + 1);
         if (filename_end == std::string::npos)
         {
+            runtime_source_line_infos.push_back({ current_file, line_num, line });
             add_error(line_num, first_non_space + 1, "#include: missing closing '%c'", close_char);
             result += "\n";
             continue;
         }
         std::string include_filename = rest.substr(filename_start + 1, filename_end - filename_start - 1);
-        //解析完整路径
-        std::string full_path = current_dir + "/" + include_filename;
-        std::string normalized = normalize_path(full_path);
-        //检查循环包含
-        if (visited.count(normalized))
+
+        std::vector<std::string> candidates;
+        if (is_absolute_path(include_filename))
+        {
+            candidates.push_back(include_filename);
+        }
+        else
+        {
+            candidates.push_back((current_dir.empty() ? "." : current_dir) + "/" + include_filename);
+            for (const auto& dir : extra_include_dirs)
+            {
+                candidates.push_back((dir.empty() ? "." : dir) + "/" + include_filename);
+            }
+        }
+
+        std::ifstream ifs;
+        std::string full_path;
+        std::string normalized;
+        for (const auto& candidate : candidates)
+        {
+            std::string candidate_normalized = normalize_path(candidate);
+            if (visited.count(candidate_normalized))
+            {
+                full_path = candidate;
+                normalized = std::move(candidate_normalized);
+                break;
+            }
+            ifs.open(candidate);
+            if (!ifs.is_open())
+            {
+                ifs.clear();
+                ifs.open(candidate_normalized);
+            }
+            if (ifs.is_open())
+            {
+                full_path = candidate;
+                normalized = std::move(candidate_normalized);
+                break;
+            }
+            ifs.clear();
+        }
+
+        if (!normalized.empty() && visited.count(normalized))
         {
             result += "\n";    //跳过已包含的文件，插入空行保持行号
+            runtime_source_line_infos.push_back({ current_file, line_num, line });
             continue;
         }
-        visited.insert(normalized);
-        //读取被包含的文件
-        std::ifstream ifs(full_path);
         if (!ifs.is_open())
         {
-            //尝试用规范化路径打开
-            ifs.open(normalized);
-        }
-        if (!ifs.is_open())
-        {
+            runtime_source_line_infos.push_back({ current_file, line_num, line });
             add_error(line_num, first_non_space + 1, "#include: cannot open file '%s'", include_filename.c_str());
             result += "\n";
             continue;
         }
+        visited.insert(normalized);
         std::string included_content((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
         //递归预处理被包含的文件
         std::string included_dir = get_directory(full_path);
-        std::string processed = preprocess_includes(included_content, included_dir, visited);
+        std::string processed = preprocess_includes(included_content, normalized, included_dir, extra_include_dirs, visited);
         result += processed;
     }
     return result;
@@ -3117,10 +3269,11 @@ std::string Cifa::get_errors_str() const
     for (auto& e : errors)
     {
         str += "Syntax Error: " + e.message + "\n";
-        if (e.line > 0 && e.line <= runtime_source_lines.size())
+        if (e.line > 0 && e.line <= runtime_source_line_infos.size())
         {
-            const std::string& line_text = runtime_source_lines[e.line - 1];
-            std::string header = "  at line " + std::to_string(e.line) + ", col " + std::to_string(e.col) + ": ";
+            const auto& source_line = runtime_source_line_infos[e.line - 1];
+            const std::string& line_text = source_line.text;
+            std::string header = "  at " + source_line.filename + ":" + std::to_string(source_line.line) + ", col " + std::to_string(e.col) + ": ";
             str += header + line_text + "\n";
             size_t arrow_col = e.col > 0 ? (e.col - 1) : 0;
             std::string caret_line(header.size(), ' ');
@@ -3157,7 +3310,16 @@ std::string Cifa::format_runtime_frame(const CalUnit& c) const
 {
     std::string label = c.str.empty() ? "<none>" : c.str;
     std::string line_text;
-    if (c.line > 0 && c.line <= runtime_source_lines.size())
+    std::string filename = "<script>";
+    size_t line = c.line;
+    if (c.line > 0 && c.line <= runtime_source_line_infos.size())
+    {
+        const auto& source_line = runtime_source_line_infos[c.line - 1];
+        filename = source_line.filename;
+        line = source_line.line;
+        line_text = source_line.text;
+    }
+    else if (c.line > 0 && c.line <= runtime_source_lines.size())
     {
         line_text = runtime_source_lines[c.line - 1];
     }
@@ -3166,7 +3328,7 @@ std::string Cifa::format_runtime_frame(const CalUnit& c) const
         line_text = label;
     }
 
-    std::string header = "line " + std::to_string(c.line) + ", col " + std::to_string(c.col) + ": ";
+    std::string header = filename + ":" + std::to_string(line) + ", col " + std::to_string(c.col) + ": ";
     size_t arrow_col = c.col > 0 ? (c.col - 1) : 0;
     std::string caret_line(header.size(), ' ');
     const size_t prefix_len = std::min(arrow_col, line_text.size());
@@ -3202,6 +3364,7 @@ void Cifa::clear_runtime_error()
 {
     runtime_call_stack.clear();
     runtime_source_lines.clear();
+    runtime_source_line_infos.clear();
     runtime_error_message.clear();
     runtime_error_reported = false;
 }

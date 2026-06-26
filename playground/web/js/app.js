@@ -1,5 +1,6 @@
 /**
  * Cifa Script Playground — VSCode-Inspired Multi-Tab Layout with File Explorer
+ * 使用 IDBFS (IndexedDB) 实现持久化虚拟文件系统
  */
 
 import CifaModule from '../cifa.js';
@@ -108,29 +109,163 @@ let _idCounter = 0;
 function nextId() { return 'f_' + (++_idCounter); }
 
 /* =========================================================
-   File Tree Data Model
+   IDBFS - 基于 IndexedDB 的持久化文件系统
    ========================================================= */
-class FileNode {
-    constructor(name, type, content = '') {
-        this.id = nextId();
-        this.name = name;
-        this.type = type; // 'file' | 'folder'
-        this.content = type === 'file' ? content : '';
-        this.children = type === 'folder' ? [] : null;
-        this.parent = null;
-    }
-}
-
-class FileSystem {
+class IDBFileSystem {
     constructor() {
-        this.root = new FileNode('workspace', 'folder');
-        // Add default main.c
-        const mainFile = new FileNode('main.c', 'file', 'println("Hello, Cifa Script!");\n\nreturn 0;');
-        mainFile.parent = this.root;
-        this.root.children.push(mainFile);
+        this.dbName = 'cifa_playground_fs';
+        this.dbVersion = 1;
+        this.storeName = 'files';
+        this.db = null;
+        this.root = null;
+        this._initialized = false;
     }
 
+    /**
+     * 初始化 IDBFS，从 IndexedDB 加载或创建默认文件系统
+     */
+    async init() {
+        this.db = await this._openDB();
+        this.root = await this._loadFromDB();
+
+        if (!this.root) {
+            // 首次使用，创建默认文件系统
+            this.root = this._createDefaultFS();
+            await this._saveToDB();
+        }
+
+        this._initialized = true;
+        return this;
+    }
+
+    /**
+     * 打开 IndexedDB 数据库
+     */
+    _openDB() {
+        return new Promise((resolve, reject) => {
+            const request = indexedDB.open(this.dbName, this.dbVersion);
+
+            request.onerror = () => reject(request.error);
+
+            request.onupgradeneeded = (event) => {
+                const db = event.target.result;
+                if (!db.objectStoreNames.contains(this.storeName)) {
+                    db.createObjectStore(this.storeName, { keyPath: 'id' });
+                }
+            };
+
+            request.onsuccess = () => resolve(request.result);
+        });
+    }
+
+    /**
+     * 从 IndexedDB 加载文件系统
+     */
+    async _loadFromDB() {
+        return new Promise((resolve, reject) => {
+            const transaction = this.db.transaction([this.storeName], 'readonly');
+            const store = transaction.objectStore(this.storeName);
+            const request = store.get('root');
+
+            request.onerror = () => reject(request.error);
+            request.onsuccess = () => {
+                const data = request.result;
+                if (data && data.tree) {
+                    resolve(this._deserializeNode(data.tree));
+                } else {
+                    resolve(null);
+                }
+            };
+        });
+    }
+
+    /**
+     * 保存文件系统到 IndexedDB
+     */
+    async _saveToDB() {
+        return new Promise((resolve, reject) => {
+            const transaction = this.db.transaction([this.storeName], 'readwrite');
+            const store = transaction.objectStore(this.storeName);
+            const request = store.put({
+                id: 'root',
+                tree: this._serializeNode(this.root),
+                timestamp: Date.now()
+            });
+
+            request.onerror = () => reject(request.error);
+            request.onsuccess = () => resolve();
+        });
+    }
+
+    /**
+     * 序列化节点（去除循环引用）
+     */
+    _serializeNode(node) {
+        const serialized = {
+            id: node.id,
+            name: node.name,
+            type: node.type,
+            content: node.content || ''
+        };
+
+        if (node.type === 'folder' && node.children) {
+            serialized.children = node.children.map(child => this._serializeNode(child));
+        }
+
+        return serialized;
+    }
+
+    /**
+     * 反序列化节点（重建 parent 引用）
+     */
+    _deserializeNode(data, parent = null) {
+        const node = {
+            id: data.id,
+            name: data.name,
+            type: data.type,
+            content: data.content || '',
+            parent: parent,
+            children: null
+        };
+
+        if (data.type === 'folder' && data.children) {
+            node.children = data.children.map(child => this._deserializeNode(child, node));
+        }
+
+        return node;
+    }
+
+    /**
+     * 创建默认文件系统
+     */
+    _createDefaultFS() {
+        const root = {
+            id: nextId(),
+            name: 'workspace',
+            type: 'folder',
+            content: '',
+            children: [],
+            parent: null
+        };
+
+        const mainFile = {
+            id: nextId(),
+            name: 'main.c',
+            type: 'file',
+            content: 'println("Hello, Cifa Script!");\n\nreturn 0;',
+            children: null,
+            parent: root
+        };
+
+        root.children.push(mainFile);
+        return root;
+    }
+
+    /**
+     * 查找节点
+     */
     findNode(id, node = this.root) {
+        if (!node) return null;
         if (node.id === id) return node;
         if (node.children) {
             for (const child of node.children) {
@@ -141,53 +276,99 @@ class FileSystem {
         return null;
     }
 
+    /**
+     * 判断是否为文件夹
+     */
     isFolder(id) {
         const node = this.findNode(id);
         return node && node.type === 'folder';
     }
 
-    addFile(parentId, name, content = '') {
+    /**
+     * 添加文件
+     */
+    async addFile(parentId, name, content = '') {
         const parent = this.findNode(parentId);
         if (!parent || parent.type !== 'folder') return null;
-        // Check duplicate name
         if (parent.children.some(c => c.name === name && c.type === 'file')) return null;
-        const file = new FileNode(name, 'file', content);
-        file.parent = parent;
+
+        const file = {
+            id: nextId(),
+            name: name,
+            type: 'file',
+            content: content,
+            children: null,
+            parent: parent
+        };
+
         parent.children.push(file);
-        // Sort: folders first, then files, alphabetically
         this.sortChildren(parent);
+        await this._saveToDB();
         return file;
     }
 
-    addFolder(parentId, name) {
+    /**
+     * 添加文件夹
+     */
+    async addFolder(parentId, name) {
         const parent = this.findNode(parentId);
         if (!parent || parent.type !== 'folder') return null;
         if (parent.children.some(c => c.name === name && c.type === 'folder')) return null;
-        const folder = new FileNode(name, 'folder');
-        folder.parent = parent;
+
+        const folder = {
+            id: nextId(),
+            name: name,
+            type: 'folder',
+            content: '',
+            children: [],
+            parent: parent
+        };
+
         parent.children.push(folder);
         this.sortChildren(parent);
+        await this._saveToDB();
         return folder;
     }
 
-    deleteNode(id) {
+    /**
+     * 删除节点
+     */
+    async deleteNode(id) {
         const node = this.findNode(id);
         if (!node || !node.parent) return false;
         const idx = node.parent.children.indexOf(node);
         if (idx === -1) return false;
         node.parent.children.splice(idx, 1);
+        await this._saveToDB();
         return true;
     }
 
-    renameNode(id, newName) {
+    /**
+     * 重命名节点
+     */
+    async renameNode(id, newName) {
         const node = this.findNode(id);
         if (!node || !node.parent) return false;
-        // Check duplicate
         if (node.parent.children.some(c => c.name === newName && c.id !== id)) return false;
         node.name = newName;
+        await this._saveToDB();
         return true;
     }
 
+    /**
+     * 更新文件内容
+     */
+    async updateContent(id, content) {
+        const node = this.findNode(id);
+        if (!node || node.type !== 'file') return false;
+        node.content = content;
+        await this._saveToDB();
+        return true;
+    }
+
+    /**
+     * 获取路径
+     */
     getPath(id, node = this.root) {
         if (node.id === id) return node.name;
         if (node.children) {
@@ -199,6 +380,9 @@ class FileSystem {
         return null;
     }
 
+    /**
+     * 收集所有文件（用于写入 VFS）
+     */
     collectFiles(node = this.root, prefix = '') {
         const files = [];
         if (node.type === 'file') {
@@ -217,6 +401,9 @@ class FileSystem {
         return files;
     }
 
+    /**
+     * 排序子节点（文件夹优先，然后按字母排序）
+     */
     sortChildren(node) {
         if (!node.children) return;
         node.children.sort((a, b) => {
@@ -225,18 +412,50 @@ class FileSystem {
         });
     }
 
+    /**
+     * 获取唯一名称（避免重名）
+     */
     getUniqueName(parentId, baseName, type) {
         const parent = this.findNode(parentId);
         if (!parent) return baseName;
         const names = new Set(parent.children.filter(c => c.type === type).map(c => c.name));
         if (!names.has(baseName)) return baseName;
-        // Try adding number suffix
         const dot = baseName.lastIndexOf('.');
         const namePart = dot > 0 ? baseName.substring(0, dot) : baseName;
         const ext = dot > 0 ? baseName.substring(dot) : '';
         let i = 2;
         while (names.has(namePart + i + ext)) i++;
         return namePart + i + ext;
+    }
+
+    /**
+     * 导出整个文件系统为 JSON（用于备份）
+     */
+    exportJSON() {
+        return JSON.stringify(this._serializeNode(this.root), null, 2);
+    }
+
+    /**
+     * 从 JSON 导入文件系统（用于恢复备份）
+     */
+    async importJSON(jsonStr) {
+        try {
+            const data = JSON.parse(jsonStr);
+            this.root = this._deserializeNode(data);
+            await this._saveToDB();
+            return true;
+        } catch (e) {
+            console.error('Failed to import filesystem:', e);
+            return false;
+        }
+    }
+
+    /**
+     * 重置为默认文件系统
+     */
+    async reset() {
+        this.root = this._createDefaultFS();
+        await this._saveToDB();
     }
 }
 
@@ -279,7 +498,6 @@ class ContextMenu {
         this.el.style.top = y + 'px';
         this.el.classList.add('visible');
         this._onAction = onAction;
-        // Bind item clicks
         this.el.querySelectorAll('.context-menu-item').forEach(item => {
             item.onclick = (e) => {
                 e.stopPropagation();
@@ -287,7 +505,6 @@ class ContextMenu {
                 if (this._onAction) this._onAction(item.dataset.action);
             };
         });
-        // Close on any click outside
         setTimeout(() => document.addEventListener('click', this._hideOnClick), 0);
     }
 
@@ -308,7 +525,7 @@ class CifaPlayground {
         this.lintTimeout = null;
         this.lintDelay = 500;
 
-        this.fs = new FileSystem();
+        this.fs = new IDBFileSystem();
 
         // Multi-tab state
         this.tabs = [];
@@ -318,7 +535,6 @@ class CifaPlayground {
 
         // Expanded folder state
         this.expandedFolders = new Set();
-        this.expandedFolders.add(this.fs.root.id); // root always expanded
 
         // Context menus
         this.fileContextMenu = new ContextMenu('context-menu-file');
@@ -333,6 +549,11 @@ class CifaPlayground {
     /* ---- Bootstrap ---- */
     async init() {
         this.checkFileProtocolWarning();
+
+        // 初始化 IDBFS
+        await this.fs.init();
+        this.expandedFolders.add(this.fs.root.id); // root always expanded
+
         await this.initCifa();
         await this.initEditor();
         this.initUI();
@@ -563,19 +784,18 @@ class CifaPlayground {
     /* =========================================================
        Open Example as File (from dropdown)
        ========================================================= */
-    openExampleAsFile(exampleId) {
+    async openExampleAsFile(exampleId) {
         const item = EXAMPLES_MAP.get(exampleId);
         if (!item) return;
 
-        // Add .c extension
         let fileName = item.name + '.c';
 
         // Check if a file with this name already exists in root
         const existing = this.fs.root.children.find(c => c.type === 'file' && c.name === fileName);
         if (existing) {
-            // Update existing file content to the example code
-            existing.content = item.code;
-            // Close existing tab so openFile creates a fresh one with updated content
+            // Update existing file content
+            await this.fs.updateContent(existing.id, item.code);
+            // Close existing tab so openFile creates a fresh one
             const existingTab = this.tabs.find(t => t.fileId === existing.id);
             if (existingTab) {
                 this.closeTab(existingTab.id);
@@ -584,7 +804,7 @@ class CifaPlayground {
         } else {
             // Create new file in root with unique name
             fileName = this.fs.getUniqueName(this.fs.root.id, fileName, 'file');
-            const fileNode = this.fs.addFile(this.fs.root.id, fileName, item.code);
+            const fileNode = await this.fs.addFile(this.fs.root.id, fileName, item.code);
             if (fileNode) {
                 this.openFile(fileNode.id);
                 this.renderFileTree();
@@ -597,23 +817,21 @@ class CifaPlayground {
        ========================================================= */
 
     /* ---- Create New File ---- */
-    createNewFile(parentId) {
+    async createNewFile(parentId) {
         const name = this.fs.getUniqueName(parentId, 'untitled.c', 'file');
-        const fileNode = this.fs.addFile(parentId, name, '');
+        const fileNode = await this.fs.addFile(parentId, name, '');
         if (fileNode) {
-            // Expand parent
             this.expandedFolders.add(parentId);
             this.renderFileTree();
             this.openFile(fileNode.id);
-            // Start rename
             this.startRename(fileNode.id);
         }
     }
 
     /* ---- Create New Folder ---- */
-    createNewFolder(parentId) {
+    async createNewFolder(parentId) {
         const name = this.fs.getUniqueName(parentId, 'newFolder', 'folder');
-        const folderNode = this.fs.addFolder(parentId, name);
+        const folderNode = await this.fs.addFolder(parentId, name);
         if (folderNode) {
             this.expandedFolders.add(parentId);
             this.renderFileTree();
@@ -639,7 +857,6 @@ class CifaPlayground {
         this.tabs.push(tab);
         this.activeTabId = tab.id;
 
-        // Set editor content directly (skip activateTab to avoid state issues)
         this._suppressContentChange = true;
         try {
             this.editor.setValue(fileContent);
@@ -654,12 +871,9 @@ class CifaPlayground {
     }
 
     /* ---- Sync Tab Content to File Node ---- */
-    syncTabToFile(tab) {
+    async syncTabToFile(tab) {
         if (!tab.fileId) return;
-        const node = this.fs.findNode(tab.fileId);
-        if (node && node.type === 'file') {
-            node.content = tab.code;
-        }
+        await this.fs.updateContent(tab.fileId, tab.code);
     }
 
     /* =========================================================
@@ -673,7 +887,6 @@ class CifaPlayground {
         if (!newTab) return;
         if (oldTab && oldTab.id === tabId && !forceRefresh) return;
 
-        // Save old tab state
         if (oldTab && oldTab.id !== tabId) {
             oldTab.code = this.editor.getValue();
             oldTab.editorViewState = this.editor.saveViewState();
@@ -695,7 +908,7 @@ class CifaPlayground {
         this.restoreBottomPanelState(newTab);
         this.scheduleLint();
         this.renderTabs();
-        this.renderFileTree(); // Update active state
+        this.renderFileTree();
     }
 
     /* ---- Save Bottom Panel State ---- */
@@ -742,7 +955,6 @@ class CifaPlayground {
             this.tabs.splice(index, 1);
 
             if (this.tabs.length === 0) {
-                // No tabs left — create an empty one
                 const newTab = createTabModel(null, null, '');
                 this.tabs.push(newTab);
                 this.activateTab(newTab.id, true);
@@ -759,7 +971,7 @@ class CifaPlayground {
     /* ---- Close Other Tabs ---- */
     closeOtherTabs(tabId) {
         this.tabs = this.tabs.filter(t => t.id === tabId);
-        this.activeTabId = null; // force re-activate
+        this.activeTabId = null;
         this.activateTab(tabId, true);
     }
 
@@ -802,7 +1014,6 @@ class CifaPlayground {
 
             el.addEventListener('click', () => this.activateTab(tab.id));
 
-            // Tab right-click context menu
             el.addEventListener('contextmenu', (e) => {
                 e.preventDefault();
                 e.stopPropagation();
@@ -829,7 +1040,6 @@ class CifaPlayground {
 
     renderTreeNode(container, node, depth) {
         if (node.type === 'folder') {
-            // Folder header
             const header = document.createElement('div');
             header.className = 'file-tree-folder-header';
             if (!this.expandedFolders.has(node.id)) header.classList.add('collapsed');
@@ -837,20 +1047,16 @@ class CifaPlayground {
             header.innerHTML = `<span class="folder-chevron">&#9660;</span><span class="folder-icon">${this.getFolderIcon(!this.expandedFolders.has(node.id))}</span><span class="folder-name">${this.escapeHtml(node.name)}</span>`;
             header.dataset.id = node.id;
 
-            // Children container
             const children = document.createElement('div');
             children.className = 'file-tree-children';
             if (!this.expandedFolders.has(node.id)) children.classList.add('collapsed');
 
-            // Toggle expand/collapse
             header.addEventListener('click', (e) => {
-                // Don't toggle if clicking on rename input
                 if (e.target.classList.contains('rename-input')) return;
                 this.expandedFolders.has(node.id) ? this.expandedFolders.delete(node.id) : this.expandedFolders.add(node.id);
                 this.renderFileTree();
             });
 
-            // Folder right-click
             header.addEventListener('contextmenu', (e) => {
                 e.preventDefault();
                 e.stopPropagation();
@@ -862,7 +1068,6 @@ class CifaPlayground {
 
             container.appendChild(header);
 
-            // Render children
             if (node.children) {
                 for (const child of node.children) {
                     this.renderTreeNode(children, child, depth + 1);
@@ -870,29 +1075,24 @@ class CifaPlayground {
             }
             container.appendChild(children);
         } else {
-            // File item
             const item = document.createElement('div');
             item.className = 'file-tree-item';
-            // Mark active if this file is in the active tab
             const activeTab = this.getActiveTab();
             if (activeTab && activeTab.fileId === node.id) item.classList.add('active');
             item.style.setProperty('--depth', depth);
             item.dataset.id = node.id;
             item.innerHTML = `<span class="file-icon">&#128196;</span><span class="file-name">${this.escapeHtml(node.name)}</span>`;
 
-            // Single click: open file
             item.addEventListener('click', (e) => {
                 if (e.target.classList.contains('rename-input')) return;
                 this.openFile(node.id);
             });
 
-            // Double click: rename
             item.addEventListener('dblclick', (e) => {
                 e.preventDefault();
                 this.startRename(node.id);
             });
 
-            // Right-click context menu
             item.addEventListener('contextmenu', (e) => {
                 e.preventDefault();
                 e.stopPropagation();
@@ -931,7 +1131,6 @@ class CifaPlayground {
         const node = this.fs.findNode(nodeId);
         if (!node) return;
 
-        // Find the DOM element
         const el = document.querySelector(`[data-id="${nodeId}"]`);
         if (!el) return;
 
@@ -945,7 +1144,6 @@ class CifaPlayground {
 
         nameSpan.replaceWith(input);
         input.focus();
-        // Select name without extension for files
         if (node.type === 'file') {
             const dot = node.name.lastIndexOf('.');
             if (dot > 0) input.setSelectionRange(0, dot);
@@ -954,16 +1152,14 @@ class CifaPlayground {
             input.select();
         }
 
-        const commitRename = () => {
+        const commitRename = async () => {
             let newName = input.value.trim();
             if (newName && newName !== node.name) {
-                if (!this.fs.renameNode(nodeId, newName)) {
-                    // Duplicate name — revert
+                if (!await this.fs.renameNode(nodeId, newName)) {
                     newName = node.name;
                 }
                 node.name = newName;
             }
-            // Update tab name if file is open
             const tab = this.tabs.find(t => t.fileId === nodeId);
             if (tab) {
                 tab.name = node.name;
@@ -980,16 +1176,14 @@ class CifaPlayground {
     }
 
     /* ---- Delete File/Folder ---- */
-    deleteFileItem(nodeId) {
+    async deleteFileItem(nodeId) {
         const node = this.fs.findNode(nodeId);
         if (!node) return;
 
-        // Close any tabs that reference this file or files inside this folder
         const fileIds = new Set();
         if (node.type === 'file') {
             fileIds.add(nodeId);
         } else {
-            // Collect all file IDs in this folder
             const collect = (n) => {
                 if (n.type === 'file') fileIds.add(n.id);
                 if (n.children) n.children.forEach(collect);
@@ -997,13 +1191,12 @@ class CifaPlayground {
             collect(node);
         }
 
-        // Close matching tabs
         for (const fid of fileIds) {
             const tab = this.tabs.find(t => t.fileId === fid);
             if (tab) this.closeTab(tab.id);
         }
 
-        this.fs.deleteNode(nodeId);
+        await this.fs.deleteNode(nodeId);
         this.renderFileTree();
     }
 
@@ -1022,7 +1215,7 @@ class CifaPlayground {
 
         let rawErrors;
         if (tab && tab.fileId) {
-            // Multi-file lint: collect all files, write to VFS, lint with includes
+            // Multi-file lint
             const allFiles = this.fs.collectFiles();
             const paths = this.toVectorString(allFiles.map(f => f.path));
             const contents = this.toVectorString(allFiles.map(f => f.content));
@@ -1074,12 +1267,10 @@ class CifaPlayground {
         }));
         monaco.editor.setModelMarkers(this.editor.getModel(), 'cifa', markers);
 
-        // Badge
         const badge = document.getElementById('error-count');
         badge.textContent = String(errors.length);
         badge.classList.toggle('visible', errors.length > 0);
 
-        // Problems view
         const view = document.getElementById('view-problems');
         if (!errors.length) {
             view.innerHTML = '<div class="empty-state" id="problems-empty"><div>暂无问题</div></div>';
@@ -1109,7 +1300,6 @@ class CifaPlayground {
             });
         }
 
-        // Update tab model error count
         const tab = this.getActiveTab();
         if (tab) tab.errorCount = errors.length;
     }
@@ -1146,7 +1336,7 @@ class CifaPlayground {
         if (!tab) return;
 
         // Sync current editor content to file tree
-        this.syncTabToFile(tab);
+        await this.syncTabToFile(tab);
 
         const code = tab.code;
         const startTime = performance.now();
@@ -1154,7 +1344,7 @@ class CifaPlayground {
 
         try {
             if (tab.fileId) {
-                // Multi-file execution: collect all files, write to VFS
+                // Multi-file execution
                 const allFiles = this.fs.collectFiles();
                 const paths = this.toVectorString(allFiles.map(f => f.path));
                 const contents = this.toVectorString(allFiles.map(f => f.content));
