@@ -118,6 +118,11 @@ Cifa::Cifa()
             }
             return Object(import_module(d[0].toString()));
         });
+    register_function("exit", [this](ObjectVector&) -> Object
+        {
+            exit_requested = true;
+            return Object();
+        });
     //parameters["true"] = Object(1, "__");
     //parameters["false"] = Object(0, "__");
     //parameters["break"] = Object("break", "__");
@@ -650,7 +655,7 @@ Object Cifa::eval_builtin_method(const std::string& method_name, Object& obj, st
 //核心求值函数：递归遍历语法树节点并执行对应操作
 Object Cifa::eval_scoped(CalUnit& c, ScopeStack& scopes)
 {
-    if (has_runtime_error())
+    if (has_runtime_error() || is_exit_requested())
     {
         return Object("RuntimeError", "Error");
     }
@@ -877,6 +882,48 @@ Object Cifa::eval_scoped(CalUnit& c, ScopeStack& scopes)
         }
         if (c.str == "for")    //for(语句1;条件1;语句2){语句3}
         {
+            //范围 for：for (item : array)，循环变量每轮都是数组元素的值副本。
+            CalUnit* range_clause = c.v[0].type == CalUnitType::Operator && c.v[0].str == ":" ? &c.v[0] : nullptr;
+            if (range_clause == nullptr && c.v[0].type == CalUnitType::Union && c.v[0].str == "()" && c.v[0].v.size() == 1
+                && c.v[0].v[0].type == CalUnitType::Operator && c.v[0].v[0].str == ":")
+            {
+                range_clause = &c.v[0].v[0];
+            }
+            if (range_clause != nullptr && range_clause->v.size() == 2
+                && range_clause->v[0].type == CalUnitType::Parameter)
+            {
+                range_clause->v[0].with_type = false;
+                const auto& loop_var = range_clause->v[0].str;
+                Object range = eval_scoped(range_clause->v[1], scopes);
+                if (!range.isType<std::vector<Object>>())
+                {
+                    set_runtime_error("range for requires an array");
+                    return Object();
+                }
+
+                const auto values = range.ref<std::vector<Object>>();
+                Object o;
+                int loop_count = 0;
+                for (const auto& value : values)
+                {
+                    if (++loop_count > max_loop_iterations)
+                    {
+                        set_runtime_error("range for exceeded max iterations");
+                        break;
+                    }
+                    scopes.emplace_back();
+                    scopes.back()[loop_var] = value;
+                    scopes.back()[loop_var].name = loop_var;
+                    o = eval_scoped(c.v[1], scopes);
+                    scopes.pop_back();
+                    if (is_exit_requested()) { return o; }
+                    if (o.type1 == "__" && o.toString() == "break") { break; }
+                    if (o.type1 == "__" && o.toString() == "continue") { continue; }
+                    if (has_return_value(scopes)) { return return_value(scopes); }
+                }
+                return Object(0);
+            }
+
             Object o;
             int loop_count = 0;
             for (
@@ -891,6 +938,7 @@ Object Cifa::eval_scoped(CalUnit& c, ScopeStack& scopes)
                     break;
                 }
                 o = eval_scoped(c.v[1], scopes);    //执行 [语句3] 并 取执行结果
+                if (is_exit_requested()) { return o; }
                 if (o.type1 == "__" && o.toString() == "break") { break; }
                 if (o.type1 == "__" && o.toString() == "continue") { continue; }
                 if (has_return_value(scopes)) { return return_value(scopes); }
@@ -909,6 +957,7 @@ Object Cifa::eval_scoped(CalUnit& c, ScopeStack& scopes)
                     break;
                 }
                 o = eval_scoped(c.v[1], scopes);    //执行 [语句1] 并 取执行结果
+                if (is_exit_requested()) { return o; }
                 if (o.type1 == "__" && o.toString() == "break") { break; }
                 if (o.type1 == "__" && o.toString() == "continue") { continue; }
                 if (has_return_value(scopes)) { return return_value(scopes); }
@@ -927,6 +976,7 @@ Object Cifa::eval_scoped(CalUnit& c, ScopeStack& scopes)
                     break;
                 }
                 o = eval_scoped(c.v[0], scopes);    //执行 [语句1] 并 取执行结果
+                if (is_exit_requested()) { return o; }
                 if (o.type1 == "__" && o.toString() == "break") { break; }
                 if (o.type1 == "__" && o.toString() == "continue") { continue; }
                 if (has_return_value(scopes)) { return return_value(scopes); }
@@ -960,6 +1010,11 @@ Object Cifa::eval_scoped(CalUnit& c, ScopeStack& scopes)
                 else if (!skip)
                 {
                     auto o = eval_scoped(c1, scopes);
+                    if (is_exit_requested())
+                    {
+                        scopes.pop_back();
+                        return o;
+                    }
                     if (o.type1 == "__" && o.toString() == "break") { break; }
                     if (has_return_value(scopes))
                     {
@@ -1011,6 +1066,14 @@ Object Cifa::eval_scoped(CalUnit& c, ScopeStack& scopes)
         for (auto& c1 : c.v)
         {
             o = eval_scoped(c1, scopes);
+            if (is_exit_requested())
+            {
+                if (is_block_scope)
+                {
+                    scopes.pop_back();
+                }
+                return o;
+            }
             if (o.type1 == "__" && o.toString() == "break") { break; }
             if (o.type1 == "__" && o.toString() == "continue") { break; }
             if (has_return_value(scopes))
@@ -1256,6 +1319,10 @@ std::list<CalUnit> Cifa::split(std::string& str)
         }
         else if (g == CalUnitType::None)
         {
+            if (!std::isspace(static_cast<unsigned char>(c)))
+            {
+                add_error(line, col, "unexpected character '%c'", c);
+            }
             stat = CalUnitType::None;
         }
         if (pre_stat != stat || stat == CalUnitType::Operator || stat == CalUnitType::Split)
@@ -2132,8 +2199,40 @@ Object Cifa::run_function(const std::string& name, std::vector<CalUnit>& vc, Sco
         std::vector<Object> v;
         for (auto& c : vc)
         {
-            v.emplace_back(eval_scoped(c, scopes));
+            if (name == "type" && c.type == CalUnitType::Parameter)
+            {
+                v.emplace_back(get_parameter(c, scopes, true));
+            }
+            else
+            {
+                v.emplace_back(eval_scoped(c, scopes));
+            }
         }
+        for (auto& value : v)
+        {
+            value.argument_origin = &value;
+        }
+        struct ActiveFunctionArgumentsGuard
+        {
+            const std::vector<CalUnit>*& active_arguments;
+            const std::vector<CalUnit>* previous_arguments;
+            const ObjectVector*& active_values;
+            const ObjectVector* previous_values;
+
+            ActiveFunctionArgumentsGuard(const std::vector<CalUnit>*& active, const std::vector<CalUnit>& arguments,
+                const ObjectVector*& values, const ObjectVector& function_values) :
+                active_arguments(active), previous_arguments(active), active_values(values), previous_values(values)
+            {
+                active_arguments = &arguments;
+                active_values = &function_values;
+            }
+
+            ~ActiveFunctionArgumentsGuard()
+            {
+                active_arguments = previous_arguments;
+                active_values = previous_values;
+            }
+        } argument_guard(active_function_arguments, vc, active_function_values, v);
         return f(v);
     }
     else if (functions2.count(name))
@@ -2172,9 +2271,18 @@ Object& Cifa::get_parameter(CalUnit& c, ScopeStack& scopes, bool only_check)
     }
     if (c.v.size() > 0 && c.v[0].str == "[]")
     {
-        return resolve_indexed_parameter(c, scopes, only_check, false, true);
+        auto* base = find_object_from_inner(scopes, c.str);
+        const bool is_map_access = (base != nullptr && base->isType<ObjectMap>())
+            || (!c.v[0].v.empty() && c.v[0].v[0].type == CalUnitType::String);
+            auto& element = resolve_indexed_parameter(c, scopes, only_check, false, true);
+        if (!only_check && !is_map_access && !element.hasValue())
+            {
+                set_runtime_error("array element '" + element.name + "' has not been initialized");
+            }
+            return element;
     }
     auto* o = find_object_from_inner(scopes, c.str);
+    const bool existed = o != nullptr;
     if (o == nullptr)
     {
         if (scopes.empty())
@@ -2184,6 +2292,10 @@ Object& Cifa::get_parameter(CalUnit& c, ScopeStack& scopes, bool only_check)
         o = &scopes.back()[c.str];
     }
     o->name = c.str;
+    if (!only_check && existed && !c.with_type && !o->hasValue())
+    {
+        set_runtime_error("variable '" + o->name + "' has not been initialized");
+    }
     return *o;
 }
 
@@ -2516,20 +2628,12 @@ void Cifa::check_cal_unit(CalUnit& c, CalUnit* father, std::unordered_map<std::s
                 }
                 else
                 {
-                    if (c.v[0].type == CalUnitType::Parameter)
+                    check_cal_unit(c.v[1], &c, p);    //here make sure no undefined parameters at right of "="
+                    p[c.v[0].str].name = c.v[0].str;
+                    //赋值左侧的下标表达式也需要递归检查
+                    for (auto& sub : c.v[0].v)
                     {
-                        check_cal_unit(c.v[1], &c, p);    //here make sure no undefined parameters at right of "="
-                        p[c.v[0].str].name = c.v[0].str;
-                        //赋值左侧的下标表达式也需要递归检查
-                        for (auto& sub : c.v[0].v)
-                        {
-                            check_cal_unit(sub, &c.v[0], p);
-                        }
-                    }
-                    else
-                    {
-                        //左侧不是参数（如常量、字符串），仍需递归检查右侧
-                        check_cal_unit(c.v[1], &c, p);
+                        check_cal_unit(sub, &c.v[0], p);
                     }
                     if (c.v[0].type == CalUnitType::Parameter && p[c.v[0].str].type1 == "__"
                         || c.v[0].type != CalUnitType::Parameter
@@ -2635,7 +2739,8 @@ void Cifa::check_cal_unit(CalUnit& c, CalUnit* father, std::unordered_map<std::s
         }
         else if (father && father->type == CalUnitType::Operator)
         {
-            if (father->str == "::" || father->str == ".")
+            if (father->str == "::" || father->str == "."
+                || (father->str == ":" && father->v.size() >= 1 && &father->v[0] == &c))
             {
                 // do nothings
             }
@@ -2668,7 +2773,7 @@ void Cifa::check_cal_unit(CalUnit& c, CalUnit* father, std::unordered_map<std::s
     }
     else if (c.type == CalUnitType::Function)
     {
-        if (c.v.size() == 0)
+        if (c.v.size() == 0 && c.str != "exit")
         {
             add_error(c, "function '%s' has no operands", c.str.c_str());
         }
@@ -2735,13 +2840,25 @@ void Cifa::check_cal_unit(CalUnit& c, CalUnit* father, std::unordered_map<std::s
         }
         if (c.str == "for")
         {
-            if (c.v[0].type != CalUnitType::Union || c.v[0].str != "()" || c.v[0].v.size() != 3
-                || !c.v[0].v[0].is_statement() || !c.v[0].v[1].is_statement() || (c.v[0].v[2].is_statement() && c.v[0].v[2].type != CalUnitType::None))
+            CalUnit* range_clause = c.v[0].type == CalUnitType::Operator && c.v[0].str == ":" ? &c.v[0] : nullptr;
+            if (range_clause == nullptr && c.v[0].type == CalUnitType::Union && c.v[0].str == "()" && c.v[0].v.size() == 1
+                && c.v[0].v[0].type == CalUnitType::Operator && c.v[0].v[0].str == ":")
+            {
+                range_clause = &c.v[0].v[0];
+            }
+            const bool is_range_for = range_clause != nullptr && range_clause->v.size() == 2
+                && range_clause->v[0].type == CalUnitType::Parameter;
+            if (!is_range_for && (c.v[0].type != CalUnitType::Union || c.v[0].str != "()" || c.v[0].v.size() != 3
+                || !c.v[0].v[0].is_statement() || !c.v[0].v[1].is_statement() || (c.v[0].v[2].is_statement() && c.v[0].v[2].type != CalUnitType::None)))
             {
                 add_error(c, "for loop condition is not right");
             }
+            if (is_range_for)
+            {
+                p[range_clause->v[0].str].name = range_clause->v[0].str;
+            }
             //检测 for(;; ) 和 for(; true/1; ) 形式的潜在死循环
-            if (c.v[0].type == CalUnitType::Union && c.v[0].str == "()" && c.v[0].v.size() == 3)
+            if (!is_range_for && c.v[0].type == CalUnitType::Union && c.v[0].str == "()" && c.v[0].v.size() == 3)
             {
                 auto& cond = c.v[0].v[1];
                 bool is_always_true = (cond.type == CalUnitType::None)
@@ -3053,9 +3170,9 @@ Object Cifa::run_pipeline(std::string str, std::unordered_map<std::string, Objec
         {
             RuntimeReporterGuard(Cifa* owner)
             {
-                Object::set_runtime_error_reporter([owner](const std::string& message)
+                Object::set_runtime_error_reporter([owner](const std::string& message, const Object* source)
                     {
-                        owner->set_runtime_error(message);
+                        owner->set_runtime_error(message, source);
                     });
             }
             ~RuntimeReporterGuard()
@@ -3430,17 +3547,36 @@ std::string Cifa::format_runtime_frame(const CalUnit& c) const
 }
 
 //设置运行时错误消息（仅记录第一个错误，后续错误忽略）
-void Cifa::set_runtime_error(const std::string& message)
+void Cifa::set_runtime_error(const std::string& message, const Object* source)
 {
     if (has_runtime_error())
     {
         return;
+    }
+    bool pushed_argument_frame = false;
+    if (source != nullptr && active_function_arguments != nullptr && active_function_values != nullptr)
+    {
+        const Object* origin = source->argument_origin != nullptr ? source->argument_origin : source;
+        const size_t count = std::min(active_function_arguments->size(), active_function_values->size());
+        for (size_t index = 0; index < count; ++index)
+        {
+            if (&(*active_function_values)[index] == origin)
+            {
+                runtime_call_stack.push_back(format_runtime_frame((*active_function_arguments)[index]));
+                pushed_argument_frame = true;
+                break;
+            }
+        }
     }
     runtime_error_message = message.empty() ? "runtime error" : message;
     if (output_error && !runtime_error_reported)
     {
         print_runtime_error();
         runtime_error_reported = true;
+    }
+    if (pushed_argument_frame)
+    {
+        runtime_call_stack.pop_back();
     }
 }
 
@@ -3452,6 +3588,7 @@ void Cifa::clear_runtime_error()
     runtime_source_line_infos.clear();
     runtime_error_message.clear();
     runtime_error_reported = false;
+    exit_requested = false;
 }
 
 //输出运行时错误信息和调用栈到 stderr（相同源码行的栈帧会去重）
@@ -3463,22 +3600,16 @@ void Cifa::print_runtime_error() const
         return;
     }
     fprintf(stderr, "Call Stack (most recent call last):\n");
-    std::string last_source_line;
+    // Keep distinct columns from a shared source line; only remove exact duplicates.
+    std::string last_frame;
     for (auto it = runtime_call_stack.rbegin(); it != runtime_call_stack.rend(); ++it)
     {
         const std::string& frame = *it;
-        const size_t line_pos = frame.find("line ");
-        const size_t colon_pos = frame.find(": ");
-        if (line_pos == 0 && colon_pos != std::string::npos)
+        if (frame == last_frame)
         {
-            size_t line_end = frame.find('\n', colon_pos + 2);
-            std::string source_line = frame.substr(colon_pos + 2, line_end == std::string::npos ? std::string::npos : line_end - (colon_pos + 2));
-            if (!source_line.empty() && source_line == last_source_line)
-            {
-                continue;
-            }
-            last_source_line = std::move(source_line);
+            continue;
         }
+        last_frame = frame;
         size_t newline_pos = frame.find('\n');
         if (newline_pos == std::string::npos)
         {

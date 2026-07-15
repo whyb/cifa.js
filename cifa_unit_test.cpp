@@ -25,6 +25,11 @@ static void template_set_flag(Object flag)
     (void)flag;
 }
 
+static double template_menu(double x, double y, Object choices, double count)
+{
+    return x + y + count + (choices.hasValue() ? 0.0 : 1.0);
+}
+
 bool register_function_test()
 {
     Cifa c1;
@@ -68,6 +73,88 @@ bool register_function_template_test()
     return o.isNumber() && o.toDouble() == 16.0;
 }
 
+bool exit_function_test()
+{
+    {
+        Cifa c;
+        std::unordered_map<std::string, Object> values;
+        c.run_script("value = 1; exit(); value = 2;", values);
+        if (!values.contains("value") || values.at("value").toDouble() != 1.0)
+        {
+            return false;
+        }
+    }
+    {
+        Cifa c;
+        std::unordered_map<std::string, Object> values;
+        c.run_script("count = 0; running = 1; while (running) { count++; exit(); count++; }", values);
+        if (!values.contains("count") || values.at("count").toDouble() != 1.0)
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool typed_function_argument_error_test()
+{
+    Cifa c;
+    c.set_output_error(false);
+    c.register_function("menu", template_menu);
+    auto o = c.run_script("strs = {1, 2}; menu(85, 100, strs, strs);");
+    return o.getSpecialType() == "Error"
+        && c.get_runtime_error().find("variable 'strs'") != std::string::npos
+        && c.get_runtime_error().find("to double") != std::string::npos;
+}
+
+bool object_vector_argument_error_test()
+{
+    const auto expect_conversion_error = [](const Cifa::func_type& menu, const std::string& target_type)
+        {
+            Cifa c;
+            c.set_output_error(false);
+            c.register_function("menu", menu);
+            auto result = c.run_script("strs = {1, 2}; menu(85, 100, strs, strs);");
+            return result.getSpecialType() == "Error"
+                && c.get_runtime_error().find("variable 'strs'") != std::string::npos
+                && c.get_runtime_error().find(target_type) != std::string::npos;
+        };
+    const auto expect_ref_error = []()
+        {
+            Cifa c;
+            c.set_output_error(false);
+            c.register_function("menu", [](ObjectVector& args) -> Object
+                {
+                    return Object(args[3].ref<ObjectMap>().size());
+                });
+            try
+            {
+                c.run_script("strs = {1, 2}; menu(85, 100, strs, strs);");
+            }
+            catch (const std::bad_any_cast&)
+            {
+                return c.get_runtime_error().find("variable 'strs'") != std::string::npos
+                    && c.get_runtime_error().find(typeid(ObjectMap).name()) != std::string::npos;
+            }
+            return false;
+        };
+
+    return expect_conversion_error([](ObjectVector& args) -> Object
+        {
+            return Object(args[3].toDouble());
+        }, "to double")
+        && expect_conversion_error([](ObjectVector& args) -> Object
+        {
+            Object value = args[3];
+            return Object(value.toDouble());
+        }, "to double")
+        && expect_conversion_error([](ObjectVector& args) -> Object
+        {
+            return Object(args[3].toString());
+        }, "to string")
+        && expect_ref_error();
+}
+
 bool builtin_math_function_test()
 {
     Cifa c;
@@ -89,12 +176,33 @@ bool builtin_math_function_test()
     return o.isNumber() && std::fabs(o.toDouble() - 22.0) < 1e-9;
 }
 
-bool import_dll_test()
+bool builtin_type_function_test()
 {
     Cifa c;
     auto o = c.run_script(R"(
-        import("build/cifa_import_example.dll");
-        import("build/cifa_import_example.dll");
+        int empty_value;
+        arr = {1, 2};
+        m["x"] = 1;
+        return type(empty_value) == "empty"
+            && type(1) == "number"
+            && type("abc") == "string"
+            && type(arr) == "array"
+            && type(m) == "map";
+    )");
+    return o.isNumber() && o.toDouble() == 1.0;
+}
+
+bool import_dll_test()
+{
+    Cifa c;
+#ifdef _DEBUG
+    constexpr const char* plugin_path = "build/cifa_import_example_debug.dll";
+#else
+    constexpr const char* plugin_path = "build/cifa_import_example_release.dll";
+#endif
+    auto o = c.run_script(R"(
+        import(")" + std::string(plugin_path) + R"(");
+        import(")" + std::string(plugin_path) + R"(");
         return plugin_square(3) + plugin_add(2, 4) + plugin_sin(0);
     )");
     return o.isNumber() && std::fabs(o.toDouble() - 15.0) < 1e-9;
@@ -203,6 +311,17 @@ bool string_operation_test()
     )";
     auto o = c.run_script(script);
     return o.hasValue() && o.isType<std::string>() && o.toString() == "Hello World";
+}
+
+bool string_compare_test()
+{    // 字符串比较与跨行逻辑运算测试
+    Cifa c;
+    std::string script = R"(
+        return "abc" == "abc"
+            && "abc" != "def";
+    )";
+    auto o = c.run_script(script);
+    return o.isNumber() && o.toDouble() == 1.0;
 }
 
 bool bitwise_operator_test()
@@ -497,6 +616,14 @@ bool runtime_error_stack_test()
     return o.getSpecialType() == "Error";
 }
 
+bool uninitialized_variable_runtime_test()
+{
+    Cifa c;
+    auto o = c.run_script("double x; return x * 2;");
+    return o.getSpecialType() == "Error"
+        && c.get_runtime_error().find("variable 'x' has not been initialized") != std::string::npos;
+}
+
 bool mixed_array_literal_test()
 {    // 混合类型数组字面量：数字、字符串混存
     Cifa c;
@@ -620,7 +747,23 @@ bool static_syntax_error_test()
         R"(int x = 1; int y = x ? 10;)",
         "no :");
 
-    // 10. 错误定位验证：错误输出应包含 "<script>:2" 和 "undef"
+    // 10. 非法字符不能被静默忽略，避免 #strs 被解释为 strs
+    {
+        Cifa c;
+        c.set_output_error(false);
+        c.run_script("return menu(85, 100, strs, #strs);");
+        std::string err = c.get_errors_str();
+        if (err.find("unexpected character '#'") == std::string::npos
+            || err.find("col 29") == std::string::npos)
+        {
+            std::cerr << "  FAIL [unexpected character]: expected '#' at column 29\n";
+            std::cerr << "    Got:\n"
+                      << err;
+            ok = false;
+        }
+    }
+
+    // 11. 错误定位验证：错误输出应包含 "<script>:2" 和 "undef"
     {
         Cifa c;
         c.set_output_error(false);
@@ -946,6 +1089,44 @@ bool array_methods_test()
             return r1 * 10 + r2;
         )");
         if (!o.hasValue() || o.toInt() != 10)
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool range_for_test()
+{
+    // 循环变量为值副本；修改不会回写数组元素。
+    {
+        Cifa c;
+        auto o = c.run_script(R"(
+            values = {1, 2, 3, 4};
+            int sum = 0;
+            for (int value : values) {
+                value *= 10;
+                if (value == 20) continue;
+                if (value == 40) break;
+                sum += value;
+            }
+            return sum + values[0] + values[1] + values[2] + values[3];
+        )");
+        if (!o.isNumber() || o.toDouble() != 50)
+        {
+            return false;
+        }
+    }
+    // auto 形式与传统范围循环作用域。
+    {
+        Cifa c;
+        auto o = c.run_script(R"(
+            values = {2, 3, 5};
+            int product = 1;
+            for (auto value : values) { product *= value; }
+            return product;
+        )");
+        if (!o.isNumber() || o.toDouble() != 30)
         {
             return false;
         }
@@ -1513,8 +1694,12 @@ bool include_error_location_in_included_file_test()
     c.set_output_error(false);
     c.run_file("unit_test/test_data/include_bad_syntax.cifa");
     std::string errors = c.get_errors_str();
+    auto error_list = c.get_errors();
     return errors.find("unit_test/test_data/bad_syntax_include.cifa:2") != std::string::npos
-        && errors.find("int y = undef_from_include;") != std::string::npos;
+        && errors.find("int y = undef_from_include;") != std::string::npos
+        && error_list.size() == 1
+        && error_list[0].filename == "unit_test/test_data/bad_syntax_include.cifa"
+        && error_list[0].line == 2;
 }
 
 bool include_error_location_after_include_test()
@@ -1523,8 +1708,12 @@ bool include_error_location_after_include_test()
     c.set_output_error(false);
     c.run_file("unit_test/test_data/include_then_bad_main.cifa");
     std::string errors = c.get_errors_str();
+    auto error_list = c.get_errors();
     return errors.find("unit_test/test_data/include_then_bad_main.cifa:3") != std::string::npos
-        && errors.find("int b = undef_after_include;") != std::string::npos;
+        && errors.find("int b = undef_after_include;") != std::string::npos
+        && error_list.size() == 1
+        && error_list[0].filename == "unit_test/test_data/include_then_bad_main.cifa"
+        && error_list[0].line == 3;
 }
 
 int main()
@@ -1546,7 +1735,12 @@ int main()
 
     run_test("register_function_test", register_function_test);
     run_test("register_function_template_test", register_function_template_test);
+    run_test("exit_function_test", exit_function_test);
+    run_test("typed_function_argument_error_test", typed_function_argument_error_test);
+    run_test("object_vector_argument_error_test", object_vector_argument_error_test);
     run_test("builtin_math_function_test", builtin_math_function_test);
+    run_test("builtin_type_function_test", builtin_type_function_test);
+    run_test("range_for_test", range_for_test);
     run_test("import_dll_test", import_dll_test);
     run_test("loop_math_test", loop_math_test);
     run_test("loop_control_test", loop_control_test);
@@ -1554,6 +1748,7 @@ int main()
     run_test("switch_case_test", switch_case_test);
     run_test("recursion_test", recursion_test);
     run_test("string_operation_test", string_operation_test);
+    run_test("string_compare_test", string_compare_test);
     run_test("bitwise_operator_test", bitwise_operator_test);
     run_test("scope_shadowing_test", scope_shadowing_test);
     run_test("complex_math_priority_test", complex_math_priority_test);
@@ -1570,6 +1765,7 @@ int main()
     run_test("compound_assignment_test", compound_assignment_test);
     run_test("c_string_library_test", c_string_library_test);
     run_test("runtime_error_stack_test", runtime_error_stack_test);
+    run_test("uninitialized_variable_runtime_test", uninitialized_variable_runtime_test);
     run_test("mixed_array_literal_test", mixed_array_literal_test);
     run_test("string_key_map_test", string_key_map_test);
     run_test("static_syntax_error_test", static_syntax_error_test);
