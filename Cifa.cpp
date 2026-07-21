@@ -1,9 +1,8 @@
 ﻿#include "Cifa.h"
 #include <algorithm>
-#include <cstdarg>
-#include <format>
 #include <fstream>
 #include <iostream>
+#include <print>
 #include <sstream>
 #ifdef _WIN32
 #ifndef NOMINMAX
@@ -28,12 +27,12 @@ Cifa::Cifa()
     {
         if (d1.isNumber())
         {
-            std::cout << d1.toDouble();
+            std::print("{}", d1.toDouble());
             return true;
         }
         if (d1.isType<std::string>())
         {
-            std::cout << d1.toString();
+            std::print("{}", d1.toString());
             return true;
         }
         //不可输出类型：触发运行时错误，不输出值
@@ -60,7 +59,7 @@ Cifa::Cifa()
                 }
             }
             //只有全部成功才输出换行，避免出错后多出空行
-            if (ok) { std::cout << "\n"; }
+            if (ok) { std::print("\n"); }
             return Object(double(d.size()));
         });
     register_function("to_string", [](ObjectVector& d)
@@ -175,7 +174,7 @@ Cifa::Cifa()
             }
             return min_val;
         });
-    register_function("random", [](ObjectVector& x) -> Object
+    register_function("random", [this](ObjectVector& x) -> Object
         {
             if (x.size() == 0) { return Object(double(rand()) / RAND_MAX); }
             if (x.size() == 1)
@@ -188,8 +187,10 @@ Cifa::Cifa()
                 double max_val = x[1].toDouble();
                 return Object(min_val + double(rand()) / RAND_MAX * (max_val - min_val));
             }
+            set_runtime_error("function 'random' expects 0 to 2 arguments, got " + std::to_string(x.size()));
+            return Object();
         });
-    register_function("size", [](ObjectVector& x) -> Object
+    register_function("size", [this](ObjectVector& x) -> Object
         {
             if (x.size() == 0) { return 0; }
             if (x.size() == 1)
@@ -206,7 +207,11 @@ Cifa::Cifa()
                 {
                     return Object(double(x[0].ref<ObjectMap>().size()));
                 }
+                set_runtime_error("function 'size' requires a string, array, or map");
+                return Object();
             }
+            set_runtime_error("function 'size' expects 0 or 1 arguments, got " + std::to_string(x.size()));
+            return Object();
         });
     // 按 printf 格式说明符将一个 Object 转为字符串
     // spec 含用户原始长度修饰符（如 %llu），此处统一剥离后按类型重新添加
@@ -1321,7 +1326,7 @@ std::list<CalUnit> Cifa::split(std::string& str)
         {
             if (!std::isspace(static_cast<unsigned char>(c)))
             {
-                add_error(line, col, "unexpected character '%c'", c);
+                add_error(line, col, "unexpected character '{}'", c);
             }
             stat = CalUnitType::None;
         }
@@ -1554,7 +1559,7 @@ std::list<CalUnit>::iterator Cifa::inside_bracket(std::list<CalUnit>& ppp, std::
     }
     if (it->str == br)
     {
-        add_error(*it, "unpaired right bracket %s", it->str.c_str());
+        add_error(*it, "unpaired right bracket {}", it->str);
         ppp.erase(it);
         return ppp.end();
     }
@@ -1577,7 +1582,7 @@ std::list<CalUnit>::iterator Cifa::inside_bracket(std::list<CalUnit>& ppp, std::
     }
     if (itr0 == ppp.end())
     {
-        add_error(*it, "unpaired left bracket %s", it->str.c_str());
+        add_error(*it, "unpaired left bracket {}", it->str);
         ppp.erase(it);
         return ppp.end();
     }
@@ -2015,9 +2020,27 @@ void Cifa::combine_functions2(std::list<CalUnit>& ppp)
                 f.body = std::move(*itr);
                 for (auto& c : it->v)
                 {
-                    f.arguments.emplace_back(std::move(c.str));
+                    std::vector<CalUnit> arguments;
+                    expand_comma(c, arguments);
+                    for (auto& argument : arguments)
+                    {
+                        f.arguments.emplace_back(std::move(argument.str));
+                    }
                 }
-                functions2[it->str] = std::move(f);
+                const std::string name = it->str;
+                const size_t argument_count = f.arguments.size();
+                if (functions.contains(name))
+                {
+                    add_error(*it, "script function '{}' conflicts with a host function", name);
+                }
+                else if (functions2[name].contains(argument_count))
+                {
+                    add_error(*it, "duplicate script function '{}' with {} arguments", name, argument_count);
+                }
+                else
+                {
+                    functions2[name][argument_count] = std::move(f);
+                }
                 ppp.erase(itr);
                 it = ppp.erase(it);
             }
@@ -2237,10 +2260,34 @@ Object Cifa::run_function(const std::string& name, std::vector<CalUnit>& vc, Sco
     }
     else if (functions2.count(name))
     {
-        auto& f = functions2[name];
+        auto& overloads = functions2[name];
+        auto overload = overloads.find(vc.size());
+        if (overload == overloads.end())
+        {
+            std::vector<size_t> arities;
+            arities.reserve(overloads.size());
+            for (const auto& [arity, function] : overloads)
+            {
+                arities.push_back(arity);
+            }
+            std::sort(arities.begin(), arities.end());
+            std::string available;
+            for (size_t index = 0; index < arities.size(); ++index)
+            {
+                if (index > 0)
+                {
+                    available += ", ";
+                }
+                available += std::to_string(arities[index]);
+            }
+            set_runtime_error("function '" + name + "' has no overload for " + std::to_string(vc.size())
+                + " arguments; available: " + available);
+            return Object();
+        }
+        auto& f = overload->second;
         ScopeStack fn_scopes;
         fn_scopes.emplace_back(parameters);
-        for (size_t i = 0; i < std::min(vc.size(), f.arguments.size()); i++)
+        for (size_t i = 0; i < f.arguments.size(); i++)
         {
             fn_scopes.back()[f.arguments[i]] = eval_scoped(vc[i], scopes);
         }
@@ -2615,7 +2662,7 @@ void Cifa::check_cal_unit(CalUnit& c, CalUnit* father, std::unordered_map<std::s
         {
             if (c.v.size() != 1)
             {
-                add_error(c, "operator %s has wrong operands", c.str.c_str());
+                add_error(c, "operator {} has wrong operands", c.str);
             }
         }
         else if (vector_have(ops, c.str) && !vector_have(ops_single, c.str))
@@ -2639,7 +2686,7 @@ void Cifa::check_cal_unit(CalUnit& c, CalUnit* father, std::unordered_map<std::s
                         || c.v[0].type != CalUnitType::Parameter
                             && !(c.v[0].type == CalUnitType::Operator && c.v[0].str == "."))
                     {
-                        add_error(c.v[0], "'%s' cannot be assigned", c.v[0].str.c_str());
+                        add_error(c.v[0], "'{}' cannot be assigned", c.v[0].str);
                     }
                 }
             }
@@ -2649,7 +2696,7 @@ void Cifa::check_cal_unit(CalUnit& c, CalUnit* father, std::unordered_map<std::s
                 {
                     if (c.v[0].type == CalUnitType::Parameter && !p.count(c.v[0].str))
                     {
-                        add_error(c.v[0], "parameter '%s' is at right of = but not been initialized", c.v[0].str.c_str());
+                        add_error(c.v[0], "parameter '{}' is at right of = but not been initialized", c.v[0].str);
                     }
                     else if (c.v[1].type == CalUnitType::Parameter)
                     {
@@ -2670,13 +2717,13 @@ void Cifa::check_cal_unit(CalUnit& c, CalUnit* father, std::unordered_map<std::s
                         }
                         if (!ok)
                         {
-                            add_error(c.v[0], "parameter '%s' in '%s' is at right of = but not been initialized", c.v[1].str.c_str(), c.v[0].str.c_str());
+                            add_error(c.v[0], "parameter '{}' in '{}' is at right of = but not been initialized", c.v[1].str, c.v[0].str);
                         }
                     }
                 }
                 else
                 {
-                    add_error(c, "operator %s has wrong operands", c.str.c_str());
+                    add_error(c, "operator {} has wrong operands", c.str);
                 }
             }
             if (c.str == "?")
@@ -2702,26 +2749,26 @@ void Cifa::check_cal_unit(CalUnit& c, CalUnit* father, std::unordered_map<std::s
             }
             else if (c.v.size() != 2)
             {
-                add_error(c, "operator %s has wrong operands", c.str.c_str());
+                add_error(c, "operator {} has wrong operands", c.str);
             }
         }
         else
         {
-            add_error(c, "unknown operator %s with %zu operands", c.str.c_str(), c.v.size());
+            add_error(c, "unknown operator {} with {} operands", c.str, c.v.size());
         }
     }
     else if (c.type == CalUnitType::Constant || c.type == CalUnitType::String)
     {
         if (c.v.size() > 0)
         {
-            add_error(c, "cannot calculate constant %s with operands", c.str.c_str());
+            add_error(c, "cannot calculate constant {} with operands", c.str);
         };
     }
     else if (c.type == CalUnitType::Parameter)
     {
         if (c.v.size() > 0 && c.v[0].str != "[]")
         {
-            add_error(c, "cannot calculate parameter '%s' with operands", c.str.c_str());
+            add_error(c, "cannot calculate parameter '{}' with operands", c.str);
         }
         //带类型前缀的独立声明（如 int i;），注册变量到作用域
         if (c.with_type)
@@ -2753,7 +2800,7 @@ void Cifa::check_cal_unit(CalUnit& c, CalUnit* father, std::unordered_map<std::s
                 //所有表达式上下文中的参数都需要初始化检查
                 if (!p.count(c.str))
                 {
-                    add_error(c, "parameter '%s' is at right of = but not been initialized", c.str.c_str());
+                    add_error(c, "parameter '{}' is at right of = but not been initialized", c.str);
                 }
             }
         }
@@ -2766,30 +2813,32 @@ void Cifa::check_cal_unit(CalUnit& c, CalUnit* father, std::unordered_map<std::s
             {
                 if (!p.count(c.str))
                 {
-                    add_error(c, "parameter '%s' is at right of = but not been initialized", c.str.c_str());
+                    add_error(c, "parameter '{}' is at right of = but not been initialized", c.str);
                 }
             }
         }
     }
     else if (c.type == CalUnitType::Function)
     {
-        if (c.v.size() == 0 && c.str != "exit")
+        const bool has_zero_argument_script_overload = functions2.contains(c.str)
+            && functions2.at(c.str).contains(0);
+        if (c.v.size() == 0 && c.str != "exit" && !has_zero_argument_script_overload)
         {
-            add_error(c, "function '%s' has no operands", c.str.c_str());
+            add_error(c, "function '{}' has no operands", c.str);
         }
         //内置方法名不视为未定义函数
         if (!functions.contains(c.str) && !functions2.contains(c.str))
         {
             if (!builtin_methods.contains(c.str))
             {
-                add_error(c, "function '%s' is not defined", c.str.c_str());
+                add_error(c, "function '{}' is not defined", c.str);
             }
         }
-        else if (!functions.contains(c.str) && functions2.contains(c.str) && functions2.at(c.str).body.type == CalUnitType::None)
+        else if (!functions.contains(c.str) && functions2.contains(c.str) && functions2.at(c.str).empty())
         {
             if (!builtin_methods.contains(c.str))
             {
-                add_error(c, "function '%s' is not defined", c.str.c_str());
+                add_error(c, "function '{}' is not defined", c.str);
             }
         }
     }
@@ -2984,14 +3033,14 @@ void Cifa::check_cal_unit(CalUnit& c, CalUnit* father, std::unordered_map<std::s
         {
             if (c.v.size() == 0 || !c.v[0].is_statement())
             {
-                add_error(c, "%s missing ;", c.str.c_str());
+                add_error(c, "{} missing ;", c.str);
             }
         }
         if (c.str == "break" || c.str == "continue")
         {
             if (c.v.size() == 0 || c.v[0].str != ";")
             {
-                add_error(c, "%s missing ;", c.str.c_str());
+                add_error(c, "{} missing ;", c.str);
             }
         }
     }
@@ -3055,7 +3104,7 @@ void Cifa::check_cal_unit(CalUnit& c, CalUnit* father, std::unordered_map<std::s
     else if (c.type == CalUnitType::Type)
     {
         //不应存在类型符号
-        add_error(c, "type %s has operands", c.str.c_str());
+        add_error(c, "type {} has operands", c.str);
     }
     for (auto& c1 : c.v)
     {
@@ -3104,7 +3153,7 @@ Object Cifa::run_file(const std::string& filename, std::unordered_map<std::strin
     std::ifstream ifs(filename);
     if (!ifs.is_open())
     {
-        add_error(filename, 1, 1, "cannot open file: %s", filename.c_str());
+        add_error(filename, 1, 1, "cannot open file: {}", filename);
         Object result = std::string("");
         result.type1 = "Error";
         if (output_error)
@@ -3154,14 +3203,17 @@ Object Cifa::run_pipeline(std::string str, std::unordered_map<std::string, Objec
             p1[name] = o;
         }
         check_cal_unit(c, nullptr, p1);
-        for (auto& [name, func2] : functions2)
+        for (auto& [name, overloads] : functions2)
         {
-            auto p1 = parameters;
-            for (auto& a : func2.arguments)
+            for (auto& [argument_count, func2] : overloads)
             {
-                p1[a] = Object();
+                auto p1 = parameters;
+                for (auto& argument : func2.arguments)
+                {
+                    p1[argument] = Object();
+                }
+                check_cal_unit(func2.body, nullptr, p1);
             }
-            check_cal_unit(func2.body, nullptr, p1);
         }
     }
     if (errors.empty())
@@ -3241,44 +3293,6 @@ bool Cifa::is_absolute_path(const std::string& filepath)
         return true;
     }
     return filepath.size() >= 3 && ((filepath[0] >= 'A' && filepath[0] <= 'Z') || (filepath[0] >= 'a' && filepath[0] <= 'z')) && filepath[1] == ':' && (filepath[2] == '/' || filepath[2] == '\\');
-}
-
-//在语法树构建之前报告错误（无CalUnit信息）
-void Cifa::add_error(size_t line, size_t col, const char* fmt, ...)
-{
-    ErrorMessage e;
-    e.expanded_line = line;
-    e.line = line;
-    e.col = col;
-    if (line > 0 && line <= runtime_source_line_infos.size())
-    {
-        const auto& source_line = runtime_source_line_infos[line - 1];
-        e.filename = source_line.filename;
-        e.line = source_line.line;
-    }
-    char buffer[1024] = { '\0' };
-    va_list args;
-    va_start(args, fmt);
-    vsnprintf(buffer, 1024, fmt, args);
-    va_end(args);
-    e.message = buffer;
-    errors.emplace(std::move(e));
-}
-
-void Cifa::add_error(const std::string& filename, size_t line, size_t col, const char* fmt, ...)
-{
-    ErrorMessage e;
-    e.filename = filename;
-    e.line = line;
-    e.col = col;
-    e.expanded_line = runtime_source_line_infos.size();
-    char buffer[1024] = { '\0' };
-    va_list args;
-    va_start(args, fmt);
-    vsnprintf(buffer, 1024, fmt, args);
-    va_end(args);
-    e.message = buffer;
-    errors.emplace(std::move(e));
 }
 
 //规范化路径：将\替换为/，解析.和..
@@ -3387,7 +3401,7 @@ std::string Cifa::preprocess_includes(const std::string& source, const std::stri
         if (filename_end == std::string::npos)
         {
             runtime_source_line_infos.push_back({ current_file, line_num, line });
-            add_error(current_file, line_num, first_non_space + 1, "#include: missing closing '%c'", close_char);
+            add_error(current_file, line_num, first_non_space + 1, "#include: missing closing '{}'", close_char);
             result += "\n";
             continue;
         }
@@ -3443,7 +3457,7 @@ std::string Cifa::preprocess_includes(const std::string& source, const std::stri
         if (!ifs.is_open())
         {
             runtime_source_line_infos.push_back({ current_file, line_num, line });
-            add_error(current_file, line_num, first_non_space + 1, "#include: cannot open file '%s'", include_filename.c_str());
+            add_error(current_file, line_num, first_non_space + 1, "#include: cannot open file '{}'", include_filename);
             result += "\n";
             continue;
         }
@@ -3498,7 +3512,7 @@ std::string Cifa::get_errors_str() const
 //将编译期错误信息输出到 stderr（委托 get_errors_str() 避免重复逻辑）
 void Cifa::print_errors() const
 {
-    fprintf(stderr, "%s", get_errors_str().c_str());
+    std::print(stderr, "{}", get_errors_str());
 }
 
 //获取所有编译期错误的列表，建议优先使用 get_errors_str() 或 print_errors()
@@ -3594,12 +3608,12 @@ void Cifa::clear_runtime_error()
 //输出运行时错误信息和调用栈到 stderr（相同源码行的栈帧会去重）
 void Cifa::print_runtime_error() const
 {
-    fprintf(stderr, "Runtime Error: %s\n", runtime_error_message.c_str());
+    std::print(stderr, "Runtime Error: {}\n", runtime_error_message);
     if (runtime_call_stack.empty())
     {
         return;
     }
-    fprintf(stderr, "Call Stack (most recent call last):\n");
+    std::print(stderr, "Call Stack (most recent call last):\n");
     // Keep distinct columns from a shared source line; only remove exact duplicates.
     std::string last_frame;
     for (auto it = runtime_call_stack.rbegin(); it != runtime_call_stack.rend(); ++it)
@@ -3613,13 +3627,13 @@ void Cifa::print_runtime_error() const
         size_t newline_pos = frame.find('\n');
         if (newline_pos == std::string::npos)
         {
-            fprintf(stderr, "  at %s\n", frame.c_str());
+            std::print(stderr, "  at {}\n", frame);
         }
         else
         {
             std::string first_line = frame.substr(0, newline_pos);
             std::string rest = frame.substr(newline_pos + 1);
-            fprintf(stderr, "  at %s\n", first_line.c_str());
+            std::print(stderr, "  at {}\n", first_line);
 
             size_t start = 0;
             while (start <= rest.size())
@@ -3628,7 +3642,7 @@ void Cifa::print_runtime_error() const
                 std::string continuation = (pos == std::string::npos) ? rest.substr(start) : rest.substr(start, pos - start);
                 if (!continuation.empty())
                 {
-                    fprintf(stderr, "     %s\n", continuation.c_str());
+                    std::print(stderr, "     {}\n", continuation);
                 }
                 if (pos == std::string::npos)
                 {
