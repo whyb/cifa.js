@@ -35,6 +35,7 @@ const EXAMPLE_GROUPS = [
             { id: 'exit_function', name: 'exit() 控制流', code: `value = 1;\nprintln("执行前: value = ", value);\n\nint count = 0;\nint running = 1;\nwhile (running) {\n    count++;\n    println("count = ", count);\n    if (count >= 3) exit();\n}\n\nprintln("这行永远不会执行");` },
             { id: 'ternary_switch', name: '三目与 switch', code: `int x = 2;\nint res = 0;\n\nswitch (x) {\n    case 1: res = 10; break;\n    case 2: res = 20;\n    case 3: res = 30; break;\n    default: res = 40;\n}\n\nreturn x > 1 ? res : 0;` },
             { id: 'ternary_nested', name: '嵌套三目运算', code: `int a = 1, b = 0;\nreturn a > b ? (b > a ? 10 : 20) : 30;` },
+            { id: 'goto_label', name: 'goto 标签跳转', code: `println("=== 1. 往返跳转：模拟循环 ===");\nint count = 0;\nstart:\n    count += 1;\n    println("  count = ", count);\n    if (count < 3) goto start;\n\nprintln("=== 2. goto 跳出 for 循环 ===");\nfor (int i = 0; i < 100; i++) {\n    println("  i = ", i);\n    if (i >= 2) goto exit_loop;\n}\nexit_loop:\nprintln("  循环已提前退出");\n\nprintln("=== 3. goto 跳出 {} 块 ===");\nint value = 0;\n{\n    value = 100;\n    goto skip_block;\n    value = 999;\n}\nskip_block:\nprintln("  value = ", value);\n\nprintln("=== 4. 向前跳过代码 ===");\nprintln("  步骤 1");\ngoto jump_forward;\nprintln("  这行被跳过");\njump_forward:\nprintln("  步骤 2");\n\nreturn count;` },
         ]
     },
     {

@@ -77,18 +77,18 @@ bool exit_function_test()
 {
     {
         Cifa c;
-        std::unordered_map<std::string, Object> values;
-        c.run_script("value = 1; exit(); value = 2;", values);
-        if (!values.contains("value") || values.at("value").toDouble() != 1.0)
+        c.run_script("value = 1; exit(); value = 2;");
+        auto result = c.run_script("return value;");
+        if (!result.isNumber() || result.toDouble() != 1.0)
         {
             return false;
         }
     }
     {
         Cifa c;
-        std::unordered_map<std::string, Object> values;
-        c.run_script("count = 0; running = 1; while (running) { count++; exit(); count++; }", values);
-        if (!values.contains("count") || values.at("count").toDouble() != 1.0)
+        c.run_script("count = 0; running = 1; while (running) { count++; exit(); count++; }");
+        auto result = c.run_script("return count;");
+        if (!result.isNumber() || result.toDouble() != 1.0)
         {
             return false;
         }
@@ -318,21 +318,6 @@ bool script_function_argument_count_test()
             std::cerr << "  " << label << ": " << error << "\n";
             return true;
         };
-    const auto expect_static_error = [](const char* label, const std::string& script, const std::string& expected)
-        {
-            Cifa c;
-            c.set_output_error(false);
-            c.run_script(script);
-            const std::string errors = c.get_errors_str();
-            if (!c.has_error() || errors.find(expected) == std::string::npos || errors.find("^") == std::string::npos)
-            {
-                std::cerr << "  " << label << " failed: expected static error: " << expected << "\n";
-                std::cerr << "    actual:\n" << errors;
-                return false;
-            }
-            std::cerr << "  " << label << ":\n" << errors;
-            return true;
-        };
     {
         Cifa c;
         auto result = c.run_script(
@@ -345,14 +330,91 @@ bool script_function_argument_count_test()
             return false;
         }
     }
+    {
+        Cifa c;
+        auto result = c.run_script("same(value) { return value; } same(other) { return other + 10; } return same(1);");
+        if (!result.isNumber() || result.toDouble() != 11.0 || c.has_error())
+        {
+            return false;
+        }
+        result = c.run_script("same(number) { return number + 100; } return same(1);");
+        if (!result.isNumber() || result.toDouble() != 101.0 || c.has_error())
+        {
+            return false;
+        }
+    }
     return expect_runtime_error("missing overload", "add(a, b) { return a + b; } return add(2);",
         "no overload for 1 arguments; available: 2")
         && expect_runtime_error("extra argument overload", "add(a, b) { return a + b; } return add(2, 3, 4);",
             "no overload for 3 arguments; available: 2")
-        && expect_static_error("duplicate script overload", "same(value) { return value; } same(other) { return other; }",
-            "duplicate script function 'same' with 1 arguments")
-        && expect_static_error("host function conflict", "sqrt(value) { return value; }",
-            "script function 'sqrt' conflicts with a host function");
+        && [&]()
+        {
+            Cifa c;
+            c.set_output_error(false);
+            c.run_script("sqrt(value) { return value; }");
+            const std::string errors = c.get_errors_str();
+            return c.has_error() && errors.find("script function 'sqrt' conflicts with a host function") != std::string::npos
+                && errors.find("^") != std::string::npos;
+        }();
+}
+
+bool script_function_global_scope_test()
+{
+    Cifa c;
+    int captured_value = 0;
+    c.register_function("capture", [&captured_value](ObjectVector& args) -> Object
+        {
+            captured_value = args.empty() ? 0 : args[0].toInt();
+            return Object();
+        });
+    auto global_result = c.run_script(R"(
+        b = 304;
+        update_b() {
+            capture(b);
+            b = b + 1;
+            return b;
+        }
+        result = update_b();
+        return b * 1000 + result;
+    )");
+    if (!global_result.isNumber() || global_result.toInt() != 305305 || captured_value != 304)
+    {
+        return false;
+    }
+
+    auto next_script_result = c.run_script("return 7;");
+    if (!next_script_result.isNumber() || next_script_result.toInt() != 7 || c.has_error())
+    {
+        return false;
+    }
+
+    auto persisted_function_result = c.run_script("b = 40; return update_b();");
+    if (!persisted_function_result.isNumber() || persisted_function_result.toInt() != 41 || c.has_error())
+    {
+        return false;
+    }
+
+    c.run_script("broken() { return missing_function(); }");
+    if (!c.has_error())
+    {
+        return false;
+    }
+    auto after_failed_definition = c.run_script("return 8;");
+    if (!after_failed_definition.isNumber() || after_failed_definition.toInt() != 8 || c.has_error())
+    {
+        return false;
+    }
+
+    auto shadow_result = c.run_script(R"(
+        b = 10;
+        add_one(b) {
+            b = b + 1;
+            return b;
+        }
+        result = add_one(20);
+        return b * 100 + result;
+    )");
+    return shadow_result.isNumber() && shadow_result.toInt() == 1021;
 }
 
 bool string_operation_test()
@@ -561,6 +623,26 @@ bool empty_statement_test()
     return o.toInt() == 10;
 }
 
+bool else_if_chain_test()
+{
+    Cifa c;
+    const auto run_branch = [&c](int value)
+        {
+            return c.run_script(std::format(R"(
+                int value = {};
+                if (value == 3) {{ return 30; }}
+                else if (value == 2) {{ return 20; }}
+                else if (value == 1) {{ return 10; }}
+                else {{ return 0; }}
+            )", value));
+        };
+
+    return run_branch(3).toInt() == 30
+        && run_branch(2).toInt() == 20
+        && run_branch(1).toInt() == 10
+        && run_branch(0).toInt() == 0;
+}
+
 bool multi_dimensional_array_test()
 {
     Cifa c;
@@ -660,14 +742,24 @@ bool c_string_library_test()
 }
 
 bool runtime_error_stack_test()
-{    // 运行时错误触发测试（类型转换失败）
+{    // 多层脚本函数调用中的运行时错误应传播到顶层。
     Cifa c;
+    c.set_output_error(false);
     std::string script = R"(
         string bad = "abc";
-        return sqrt(bad);
+        inner(value) { return sqrt(value); }
+        middle(value) { return inner(value); }
+        outer(value) { return middle(value); }
+        return outer(bad);
     )";
     auto o = c.run_script(script);
-    return o.getSpecialType() == "Error";
+    const std::string error = c.get_runtime_error();
+    return o.getSpecialType() == "Error"
+        && error.find("type conversion failed") != std::string::npos
+        && error.find("Call Stack (most recent call last):") != std::string::npos
+        && error.find("func inner()") != std::string::npos
+        && error.find("func middle()") != std::string::npos
+        && error.find("func outer()") != std::string::npos;
 }
 
 bool uninitialized_variable_runtime_test()
@@ -677,6 +769,60 @@ bool uninitialized_variable_runtime_test()
     return o.getSpecialType() == "Error"
         && c.get_runtime_error().find("variable 'x' has not been initialized") != std::string::npos;
 }
+
+bool nested_execution_state_test()
+{
+    Cifa c;
+    c.set_output_error(false);
+    auto success = c.run_script("shared = 10; run_string(\"shared += 1; return shared;\"); run_file(\"unit_test/test_data/nested_increment.cifa\"); return shared;");
+    if (!success.isNumber() || success.toInt() != 21 || c.has_error())
+    {
+        return false;
+    }
+
+    c.run_script("run_string(\"return missing_nested_value;\"); return 1;");
+    if (!c.has_error() || c.get_errors_str().find("missing_nested_value") == std::string::npos)
+    {
+        return false;
+    }
+
+    c.run_script("run_file(\"unit_test/test_data/not_present_nested.cifa\"); double outer_value; return outer_value;");
+    return c.has_error()
+        && c.get_errors_str().find("cannot open file") != std::string::npos
+        && !c.get_runtime_error().empty()
+        && c.get_runtime_error().find("double outer_value; return outer_value;") != std::string::npos;
+}
+
+bool nested_error_preservation_test()
+{
+    Cifa c;
+    c.set_output_error(false);
+    c.register_function("run_first", [&c](ObjectVector&) -> Object
+        {
+            return c.run_script("first_missing_function();");
+        });
+    c.register_function("run_second", [&c](ObjectVector&) -> Object
+        {
+            return c.run_script("second_missing_function();");
+        });
+    c.run_script("run_first(); run_second();");
+    const std::string errors = c.get_errors_str();
+    return c.get_errors().size() == 2
+        && errors.find("first_missing_function") != std::string::npos
+        && errors.find("second_missing_function") != std::string::npos;
+}
+
+    bool nested_static_error_source_test()
+    {
+        Cifa c;
+        c.set_output_error(false);
+        c.run_script("run_string(\"missing_nested_function();\");");
+        const auto errors = c.get_errors();
+        return errors.size() == 1
+        && errors.front().message == "function 'missing_nested_function' is not defined"
+        && errors.front().source_text == "missing_nested_function();"
+        && c.get_errors_str().find("missing_nested_function();") != std::string::npos;
+    }
 
 bool mixed_array_literal_test()
 {    // 混合类型数组字面量：数字、字符串混存
@@ -1188,6 +1334,87 @@ bool range_for_test()
     return true;
 }
 
+bool goto_test()
+{
+    {
+        Cifa c;
+        auto result = c.run_script(R"(
+            int value = 0;
+        again:
+            value += 1;
+            if (value < 3) goto again;
+            return value;
+        )");
+        if (!result.isNumber() || result.toDouble() != 3.0)
+        {
+            return false;
+        }
+    }
+    {
+        Cifa c;
+        auto result = c.run_script(R"(
+            int value = 0;
+            if (value == 0) {
+                value = 1;
+            }
+        label_after_if:
+            value += 1;
+            if (value < 3) { goto label_after_if; }
+            return value;
+        )");
+        if (!result.isNumber() || result.toDouble() != 3.0)
+        {
+            return false;
+        }
+    }
+    {
+        Cifa c;
+        auto result = c.run_script(R"(
+            int value = 0;
+            {
+                value = 1;
+                goto done;
+            }
+            value = 2;
+        done:
+            return value;
+        )");
+        if (!result.isNumber() || result.toDouble() != 1.0)
+        {
+            return false;
+        }
+    }
+    {
+        Cifa c;
+        auto result = c.run_script(R"(
+            count_to(limit) {
+                int value = 0;
+            again:
+                value += 1;
+                if (value < limit) goto again;
+                return value;
+            }
+            return count_to(4);
+        )");
+        if (!result.isNumber() || result.toDouble() != 4.0)
+        {
+            return false;
+        }
+    }
+
+    const auto expect_static_error = [](const std::string& script, const std::string& expected)
+        {
+            Cifa c;
+            c.set_output_error(false);
+            c.run_script(script);
+            return c.has_error() && c.get_errors_str().find(expected) != std::string::npos;
+        };
+    return expect_static_error("goto missing;", "goto target 'missing' is not defined")
+        && expect_static_error("first: first:", "duplicate label 'first'")
+        && expect_static_error("goto inside; { inside: return 1; }", "goto 'inside' jumps into a nested or sibling block")
+        && expect_static_error("{ left: goto right; } { right: return 1; }", "goto 'right' jumps into a nested or sibling block");
+}
+
 bool map_methods_test()
 {
     // contains
@@ -1679,9 +1906,8 @@ bool include_backward_compat_test()
 bool include_with_parameters_test()
 {
     Cifa c;
-    std::unordered_map<std::string, Object> p;
-    p["base"] = Object(100.0);
-    auto o = c.run_file("unit_test/test_data/with_params.cifa", p);
+    c.register_parameter("base", Object(100.0));
+    auto o = c.run_file("unit_test/test_data/with_params.cifa");
     return o.isNumber() && o.toDouble() == 110.0;
 }
 
@@ -1715,10 +1941,9 @@ bool include_run_script_include_dir_with_params_test()
 {
     Cifa c;
     c.set_include_dirs({ "unit_test/test_data" });
-    std::unordered_map<std::string, Object> p;
-    p["base"] = Object(100.0);
+    c.register_parameter("base", Object(100.0));
     std::string script = "return base + 10;\n";
-    auto o = c.run_script(script, p);
+    auto o = c.run_script(script);
     return o.isNumber() && o.toDouble() == 110.0;
 }
 
@@ -1836,6 +2061,7 @@ int main()
     run_test("builtin_math_function_test", builtin_math_function_test);
     run_test("builtin_type_function_test", builtin_type_function_test);
     run_test("range_for_test", range_for_test);
+    run_test("goto_test", goto_test);
     run_test("import_dll_test", import_dll_test);
     run_test("loop_math_test", loop_math_test);
     run_test("loop_control_test", loop_control_test);
@@ -1843,6 +2069,7 @@ int main()
     run_test("switch_case_test", switch_case_test);
     run_test("recursion_test", recursion_test);
     run_test("script_function_argument_count_test", script_function_argument_count_test);
+    run_test("script_function_global_scope_test", script_function_global_scope_test);
     run_test("string_operation_test", string_operation_test);
     run_test("string_compare_test", string_compare_test);
     run_test("bitwise_operator_test", bitwise_operator_test);
@@ -1857,11 +2084,15 @@ int main()
     run_test("register_map_test", register_map_test);
     run_test("type_promotion_test", type_promotion_test);
     run_test("empty_statement_test", empty_statement_test);
+    run_test("else_if_chain_test", else_if_chain_test);
     run_test("multi_dimensional_array_test", multi_dimensional_array_test);
     run_test("compound_assignment_test", compound_assignment_test);
     run_test("c_string_library_test", c_string_library_test);
     run_test("runtime_error_stack_test", runtime_error_stack_test);
     run_test("uninitialized_variable_runtime_test", uninitialized_variable_runtime_test);
+    run_test("nested_execution_state_test", nested_execution_state_test);
+    run_test("nested_error_preservation_test", nested_error_preservation_test);
+    run_test("nested_static_error_source_test", nested_static_error_source_test);
     run_test("mixed_array_literal_test", mixed_array_literal_test);
     run_test("string_key_map_test", string_key_map_test);
     run_test("static_syntax_error_test", static_syntax_error_test);

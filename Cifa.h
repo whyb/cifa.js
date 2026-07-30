@@ -201,6 +201,8 @@ enum class CalUnitType
     Key,
     Type,
     Union,
+    Label,
+    Goto,
     //UnionRound,    //()合并模式，仅for语句使用
 };
 
@@ -340,7 +342,7 @@ private:
     //右结合的运算符，注意+-既有单目又有双目，因此不能简单地放在单目列表中
     inline static const std::vector<std::string> ops_right = { "=", "*=", "/=", "%=", "+=", "-=", "<<=", ">>=", "&=", "|=", "^=" };
     //关键字，在表中的位置为其所需参数个数
-    inline static const std::vector<std::vector<std::string>> keys = { { "true", "false" }, { "break", "continue", "else", "return", "default" }, { "if", "for", "while", "do", "switch", "case" } };
+    inline static const std::vector<std::vector<std::string>> keys = { { "true", "false" }, { "break", "continue", "else", "return", "default", "goto" }, { "if", "for", "while", "do", "switch", "case" } };
     //类型列表，注意auto虽然不是真正的类型，但在语法分析阶段当作类型处理，实际运行时会被忽略
     inline static const std::vector<std::string> types = { "auto", "int", "float", "double", "string", "char" };
     //内置的运算符表示列表，用户可扩展运算符时会用到，注意这些运算符在语法分析阶段会被转换为对应的符号（如and转换为&&），因此用户扩展时也应使用符号形式的运算符
@@ -354,7 +356,7 @@ private:
     std::unordered_map<std::string, std::vector<std::string>> struct_defs;    //用户定义的 struct 类型及其字段列表
 
     std::unordered_map<std::string, void*> user_data;
-    std::unordered_map<std::string, Object> parameters;    //变量表，注意每次定义的函数调用都是独立的
+    std::unordered_map<std::string, Object> global_variables;    //C++ 注册变量与脚本顶层变量共用的实例全局表
     std::vector<void*> imported_modules;                   //通过 import() 加载的动态库句柄
     std::vector<std::string> imported_module_paths;        //避免重复加载同一个动态库
     std::vector<std::string> include_dirs;                  //#include 搜索目录
@@ -365,6 +367,8 @@ private:
         size_t line = 0, col = 0;
         std::string message;
         size_t expanded_line = 0;
+        std::string source_text;
+        bool has_source_text = false;
     };
 
     struct ErrorMessageComp
@@ -373,11 +377,19 @@ private:
         {
             size_t left_line = l.expanded_line != 0 ? l.expanded_line : l.line;
             size_t right_line = r.expanded_line != 0 ? r.expanded_line : r.line;
-            if (left_line == right_line)
+            if (left_line != right_line)
+            {
+                return left_line < right_line;
+            }
+            if (l.col != r.col)
             {
                 return l.col < r.col;
             }
-            return left_line < right_line;
+            if (l.filename != r.filename)
+            {
+                return l.filename < r.filename;
+            }
+            return l.message < r.message;
         }
     };
 
@@ -391,13 +403,21 @@ private:
     };
 
     std::vector<std::string> runtime_call_stack;
+    std::vector<std::string> runtime_error_call_stack;
     std::vector<std::string> runtime_source_lines;
     std::vector<SourceLineInfo> runtime_source_line_infos;
     const std::vector<CalUnit>* active_function_arguments = nullptr;
     const ObjectVector* active_function_values = nullptr;
     std::string runtime_error_message;
-    bool runtime_error_reported = false;
     bool exit_requested = false;
+    int execution_depth = 0;
+
+    struct ReturnState
+    {
+        bool has_value = false;
+        Object value;
+    };
+    std::vector<ReturnState> return_states;
 
     bool output_error = true;
 
@@ -436,7 +456,7 @@ public:
         {
             omap[k] = Object(v);
         }
-        parameters[name] = Object(std::move(omap));
+        global_variables[name] = Object(std::move(omap));
     }
 
     template <typename T>
@@ -448,20 +468,16 @@ public:
         {
             arr.emplace_back(Object(o));
         }
-        parameters[name] = Object(std::move(arr));
+        global_variables[name] = Object(std::move(arr));
     }
 
     void* get_user_data(const std::string& name);
 
     void set_include_dirs(const std::vector<std::string>& dirs);    //设置#include搜索目录
 
-    Object run_script(std::string script);    //运行脚本，使用独立变量表；按当前目录和include搜索目录处理#include
-
-    Object run_script(std::string script, std::unordered_map<std::string, Object>& p);    //运行脚本，使用外部变量表；按当前目录和include搜索目录处理#include
+    Object run_script(std::string script);    //运行脚本，使用实例全局变量表；按当前目录和include搜索目录处理#include
 
     Object run_file(const std::string& filename);    //从文件运行脚本，支持#include指令，并将文件所在目录作为搜索路径
-
-    Object run_file(const std::string& filename, std::unordered_map<std::string, Object>& p);    //从文件运行脚本，使用外部变量表
 
     bool has_error() const { return !errors.empty(); }
 
@@ -474,7 +490,7 @@ public:
 
     void set_output_error(bool oe) { output_error = oe; }
 
-    std::string get_runtime_error() const { return runtime_error_message; }
+    std::string get_runtime_error() const;
 
     //用户可扩展的运算符函数列表
     std::vector<std::function<Object(const Object&, const Object&)>> user_add, user_sub, user_mul, user_div, user_mod,
@@ -485,6 +501,7 @@ public:
 private:
     Object eval_scoped(CalUnit& c, ScopeStack& scopes);
     Object run_function(const std::string& name, std::vector<CalUnit>& vc, ScopeStack& scopes);
+    Object run_execution(const std::function<Object()>& action);
     Object eval_builtin_method(const std::string& method_name, Object& obj, std::vector<CalUnit>& args, ScopeStack& scopes);
 
     void expand_comma(CalUnit& c1, std::vector<CalUnit>& v);
@@ -502,10 +519,10 @@ private:
     void combine_keys(std::list<CalUnit>& ppp);
     void combine_functions2(std::list<CalUnit>& ppp);
     void combine_structs(std::list<CalUnit>& ppp);
+    void check_goto_targets(CalUnit& root);
 
     Object& get_parameter(CalUnit& c, ScopeStack& scopes, bool only_check = false);
     Object& get_parameter(const std::string& name, ScopeStack& scopes);
-    bool check_parameter(const std::string& name, ScopeStack& scopes);
     Object& get_parameter_for_assign(CalUnit& c, ScopeStack& scopes, bool declare_current = false);
     Object& resolve_indexed_parameter(CalUnit& c, ScopeStack& scopes, bool only_check, bool declare_current, bool declaration_as_array);
     Object& resolve_string_indexed_parameter(CalUnit& c, ScopeStack& scopes, const std::string& key, bool only_check, bool declare_current);
@@ -513,13 +530,15 @@ private:
     bool try_eval_array_literal(CalUnit& c, ScopeStack& scopes, Object& out);
     bool is_array_literal_candidate(CalUnit& c) const;
     Object* find_object_from_inner(ScopeStack& scopes, const std::string& name);
-    bool has_return_value(const ScopeStack& scopes) const;
-    Object& return_value(ScopeStack& scopes);
+    bool has_return_value() const;
+    Object& return_value();
     std::string format_runtime_frame(const CalUnit& c) const;
     void set_runtime_error(const std::string& message, const Object* source = nullptr);
     void clear_runtime_error();
     bool has_runtime_error() const { return !runtime_error_message.empty(); }
     bool is_exit_requested() const { return exit_requested; }
+    bool is_control_signal(const Object& value, const std::string& signal) const;
+    std::string format_runtime_error() const;
     void print_runtime_error() const;
     bool import_module(const std::string& path);
     void import_literal_modules(CalUnit& c);
@@ -542,6 +561,8 @@ private:
             const auto& source_line = runtime_source_line_infos[line - 1];
             e.filename = source_line.filename;
             e.line = source_line.line;
+            e.source_text = source_line.text;
+            e.has_source_text = true;
         }
         e.message = std::format(format, std::forward<Args>(args)...);
         errors.emplace(std::move(e));
@@ -554,11 +575,10 @@ private:
         e.filename = filename;
         e.line = line;
         e.col = col;
-        e.expanded_line = runtime_source_line_infos.size();
         e.message = std::format(format, std::forward<Args>(args)...);
         errors.emplace(std::move(e));
     }
-    Object run_pipeline(std::string str, std::unordered_map<std::string, Object>& p);
+    Object run_pipeline(std::string str);
 
     template <typename... Args>
     void add_error(CalUnit& c, std::format_string<Args...> format, Args&&... args)
@@ -572,6 +592,8 @@ private:
             const auto& source_line = runtime_source_line_infos[c.line - 1];
             e.filename = source_line.filename;
             e.line = source_line.line;
+            e.source_text = source_line.text;
+            e.has_source_text = true;
         }
         e.message = std::format(format, std::forward<Args>(args)...);
         errors.emplace(std::move(e));
