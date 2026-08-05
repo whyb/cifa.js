@@ -1,12 +1,104 @@
 #include <emscripten/bind.h>
 #include <emscripten.h>
 #include "Cifa.h"
-#include <sstream>
-#include <iostream>
+#include <cstdio>
 #include <fstream>
+
+#ifdef _WIN32
+#include <io.h>
+#include <fcntl.h>
+#define dup _dup
+#define dup2 _dup2
+#define close _close
+#define fileno _fileno
+#else
+#include <unistd.h>
+#endif
 
 using namespace emscripten;
 using namespace cifa;
+
+// 在 C 层重定向 stdout（std::print/printf 写入的是 stdout，不是 std::cout）
+// 用于捕获 print/println 的输出到 result.output
+class StdoutCapture {
+public:
+    StdoutCapture() {
+        fflush(stdout);
+        saved_fd_ = dup(fileno(stdout));
+        tmp_ = tmpfile();
+        if (!tmp_) {
+            tmp_ = std::fopen("/tmp/cifa_stdout.tmp", "w+");
+        }
+        if (tmp_) {
+            dup2(fileno(tmp_), fileno(stdout));
+        }
+    }
+
+    ~StdoutCapture() {
+        restore();
+    }
+
+    // 恢复原始 stdout 并返回捕获到的输出
+    std::string finish() {
+        std::string out = str();
+        restore();
+        return out;
+    }
+
+    // 获取当前捕获到的输出（不恢复 stdout）
+    std::string str() {
+        if (!tmp_) return "";
+        fflush(stdout);
+        fflush(tmp_);
+        fseek(tmp_, 0, SEEK_END);
+        long size = ftell(tmp_);
+        fseek(tmp_, 0, SEEK_SET);
+        std::string s;
+        if (size > 0) {
+            s.resize(static_cast<size_t>(size));
+            size_t n = fread(s.data(), 1, static_cast<size_t>(size), tmp_);
+            s.resize(n);
+        }
+        return s;
+    }
+
+private:
+    void restore() {
+        if (restored_) return;
+        if (tmp_) {
+            fflush(stdout);
+            if (saved_fd_ >= 0) {
+                dup2(saved_fd_, fileno(stdout));
+            }
+            fclose(tmp_);
+            tmp_ = nullptr;
+        }
+        if (saved_fd_ >= 0) {
+            close(saved_fd_);
+            saved_fd_ = -1;
+        }
+        restored_ = true;
+    }
+
+    int saved_fd_ = -1;
+    FILE* tmp_ = nullptr;
+    bool restored_ = false;
+};
+
+// 将捕获的输出逐行输出到浏览器控制台，保留原本的 console.log 行为
+static void logToConsole(const std::string& text) {
+    if (text.empty()) return;
+    size_t start = 0;
+    while (true) {
+        size_t pos = text.find('\n', start);
+        std::string line = (pos == std::string::npos)
+            ? text.substr(start)
+            : text.substr(start, pos - start);
+        EM_ASM({ console.log(UTF8ToString($0)); }, line.c_str());
+        if (pos == std::string::npos) break;
+        start = pos + 1;
+    }
+}
 
 // 错误信息结构体（用于导出到 JS）
 struct JsErrorMessage {
@@ -60,10 +152,8 @@ ExecuteResult execute(const std::string& code) {
     ExecuteResult result;
     result.success = false;
 
-    // 重定向 cout 到 stringstream 以捕获 print/println 输出
-    std::streambuf* oldCoutStreamBuf = std::cout.rdbuf();
-    std::ostringstream capturedOutput;
-    std::cout.rdbuf(capturedOutput.rdbuf());
+    // 重定向 C 层 stdout 以捕获 print/println 输出
+    StdoutCapture capture;
 
     Cifa cifa;
 
@@ -77,11 +167,10 @@ ExecuteResult execute(const std::string& code) {
     // 执行脚本（新版 run_script 已支持 #include 处理）
     Object obj = cifa.run_script(code);
 
-    // 恢复原始 cout 缓冲区
-    std::cout.rdbuf(oldCoutStreamBuf);
-
     // 获取捕获的输出
-    result.output = capturedOutput.str();
+    result.output = capture.finish();
+    // 同时保留浏览器控制台输出（console.log）
+    logToConsole(result.output);
 
     // 检查语法错误
     if (cifa.has_error()) {
@@ -194,10 +283,8 @@ ExecuteResult executeWithFiles(const std::string& code, const std::string& filen
     const std::vector<std::string>& paths, const std::vector<std::string>& contents) {
     writeToVFS(paths, contents);
 
-    // 重定向 cout
-    std::streambuf* oldCoutStreamBuf = std::cout.rdbuf();
-    std::ostringstream capturedOutput;
-    std::cout.rdbuf(capturedOutput.rdbuf());
+    // 重定向 C 层 stdout
+    StdoutCapture capture;
 
     Cifa cifa;
     cifa.max_loop_iterations = 1000000;
@@ -230,10 +317,10 @@ ExecuteResult executeWithFiles(const std::string& code, const std::string& filen
         obj = cifa.run_script(code);
     }
 
-    std::cout.rdbuf(oldCoutStreamBuf);
-
     ExecuteResult result;
-    result.output = capturedOutput.str();
+    result.output = capture.finish();
+    // 同时保留浏览器控制台输出（console.log）
+    logToConsole(result.output);
 
     if (cifa.has_error()) {
         result.success = false;
