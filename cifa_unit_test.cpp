@@ -269,6 +269,18 @@ bool ternary_operator_test()
     return o.hasValue() && o.toInt() == 20;
 }
 
+bool logical_short_circuit_test()
+{
+    Cifa c;
+    auto o = c.run_script(R"(
+        int a = 0, b = 0, c = 0, d = 0;
+        int first = (0 && a++) || (1 && (b++ == 0)) || c++;
+        int second = (1 || d++) && (0 || (++d == 1));
+        return a + b * 10 + c * 100 + d * 1000 + first * 10000 + second * 100000;
+    )");
+    return o.isNumber() && o.toInt() == 111010;
+}
+
 bool switch_case_test()
 {    // Switch-Case 完备性测试
     Cifa c;
@@ -513,6 +525,9 @@ bool unary_minus_test()
     ok = ok && c.run_script("return 10 - 3 - 2;").toDouble() == 5;    // 二元减左结合
     ok = ok && c.run_script("return -3 + 5;").toDouble() == 2;        // 前置负号 + 加法
     ok = ok && c.run_script("return 2 * -3;").toDouble() == -6;       // 乘以前置负号
+    ok = ok && c.run_script("x = 7; return x * -1;").toDouble() == -7; // 变量乘以前置负号
+    ok = ok && c.run_script("x = 7; x = x * -1; return x;").toDouble() == -7; // 赋值语境中的前置负号
+    ok = ok && c.run_script("x = 7; return x * -1 + x * -2;").toDouble() == -21; // 连续乘法项
     ok = ok && c.run_script("return -(2*3);").toDouble() == -6;       // 前置负号 + 乘法括号
     ok = ok && c.run_script("return -2 + -3;").toDouble() == -5;      // 两个前置负号相加
     ok = ok && c.run_script("return +5;").toDouble() == 5;            // 前置正号 + 常量
@@ -1699,11 +1714,29 @@ bool sprintf_format_test()
             return false;
         }
     }
+    // 连续说明符和 %% 混用：%% 不消耗参数，其他说明符按顺序各消耗一个参数
+    {
+        Cifa c;
+        auto o = c.run_script(R"(return sprintf("%s%d%.1f%%-%x", "A", 2, 3.5, 255);)");
+        if (!o.isType<std::string>() || o.toString() != "A23.5%-ff")
+        {
+            return false;
+        }
+    }
     // %% 转义
     {
         Cifa c;
         auto o = c.run_script(R"(return sprintf("100%%");)");
         if (!o.isType<std::string>() || o.toString() != "100%")
+        {
+            return false;
+        }
+    }
+    // 奇数个 %：前 12 个组成 6 个 %% ，末尾不完整的 % 被忽略；与 MSVC/UCRT 当前行为一致
+    {
+        Cifa c;
+        auto o = c.run_script(R"(return sprintf("100%%%%%%%%%%%%%");)");
+        if (!o.isType<std::string>() || o.toString() != "100%%%%%%")
         {
             return false;
         }
@@ -2066,6 +2099,7 @@ int main()
     run_test("loop_math_test", loop_math_test);
     run_test("loop_control_test", loop_control_test);
     run_test("ternary_operator_test", ternary_operator_test);
+    run_test("logical_short_circuit_test", logical_short_circuit_test);
     run_test("switch_case_test", switch_case_test);
     run_test("recursion_test", recursion_test);
     run_test("script_function_argument_count_test", script_function_argument_count_test);
