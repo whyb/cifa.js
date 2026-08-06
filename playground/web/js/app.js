@@ -138,6 +138,11 @@ class IDBFileSystem {
             // 首次使用，创建默认文件系统
             this.root = this._createDefaultFS();
             await this._saveToDB();
+        } else {
+            // 同步 ID 计数器并修复历史遗留的重复 ID
+            // （旧版本中 _idCounter 每次加载都从 0 开始，刷新后新建文件会与已持久化的节点 ID 冲突）
+            this._syncIdCounter();
+            this._repairDuplicateIds();
         }
 
         this._initialized = true;
@@ -145,11 +150,68 @@ class IDBFileSystem {
     }
 
     /**
+     * 将 ID 计数器同步到树中已存在的最大数字 ID，
+     * 确保刷新页面后新建文件不会与持久化节点重复
+     */
+    _syncIdCounter() {
+        let max = 0;
+        const walk = (node) => {
+            if (!node) return;
+            const m = /^f_(\d+)$/.exec(String(node.id || ''));
+            if (m) max = Math.max(max, parseInt(m[1], 10));
+            if (node.children) node.children.forEach(walk);
+        };
+        walk(this.root);
+        if (max > _idCounter) _idCounter = max;
+    }
+
+    /**
+     * 修复树中重复的节点 ID（给后出现的重复节点重新分配唯一 ID）
+     */
+    _repairDuplicateIds() {
+        const seen = new Set();
+        const walk = (node) => {
+            if (!node) return;
+            if (seen.has(node.id)) {
+                let fresh = nextId();
+                while (seen.has(fresh) || this.findNode(fresh)) fresh = nextId();
+                node.id = fresh;
+            }
+            seen.add(node.id);
+            if (node.children) node.children.forEach(walk);
+        };
+        walk(this.root);
+    }
+
+    /**
+     * 生成一个树中不存在的唯一节点 ID（双重保险）
+     */
+    _uniqueId() {
+        let id;
+        do { id = nextId(); } while (this.findNode(id));
+        return id;
+    }
+
+    /**
      * 打开 IndexedDB 数据库
      */
-    _openDB() {
+    async _openDB() {
+        // 先按当前版本打开；如果库里缺少 files store（例如旧版本遗留或
+        // 其它来源创建的数据库），关闭后提升版本重新打开，触发
+        // onupgradeneeded 补建缺失的 store，避免 _loadFromDB 报
+        // "'files' is not a known object store name"
+        let db = await this._openDBAtVersion(undefined);
+        if (!db.objectStoreNames.contains(this.storeName)) {
+            const nextVersion = db.version + 1;
+            db.close();
+            db = await this._openDBAtVersion(nextVersion);
+        }
+        return db;
+    }
+
+    _openDBAtVersion(version) {
         return new Promise((resolve, reject) => {
-            const request = indexedDB.open(this.dbName, this.dbVersion);
+            const request = indexedDB.open(this.dbName, version);
 
             request.onerror = () => reject(request.error);
 
@@ -189,17 +251,27 @@ class IDBFileSystem {
      * 保存文件系统到 IndexedDB
      */
     async _saveToDB() {
+        if (!this.db) throw new Error('IndexedDB 未初始化');
         return new Promise((resolve, reject) => {
-            const transaction = this.db.transaction([this.storeName], 'readwrite');
-            const store = transaction.objectStore(this.storeName);
-            const request = store.put({
-                id: 'root',
-                tree: this._serializeNode(this.root),
-                timestamp: Date.now()
-            });
+            let settled = false;
+            const fail = (err) => { if (!settled) { settled = true; reject(err); } };
+            const done = () => { if (!settled) { settled = true; resolve(); } };
+            try {
+                const transaction = this.db.transaction([this.storeName], 'readwrite');
+                transaction.onerror = () => fail(transaction.error || new Error('IndexedDB 事务错误'));
+                transaction.onabort = () => fail(transaction.error || new Error('IndexedDB 事务中止'));
+                const store = transaction.objectStore(this.storeName);
+                const request = store.put({
+                    id: 'root',
+                    tree: this._serializeNode(this.root),
+                    timestamp: Date.now()
+                });
 
-            request.onerror = () => reject(request.error);
-            request.onsuccess = () => resolve();
+                request.onerror = () => fail(request.error);
+                request.onsuccess = () => done();
+            } catch (e) {
+                fail(e);
+            }
         });
     }
 
@@ -299,7 +371,7 @@ class IDBFileSystem {
         if (parent.children.some(c => c.name === name && c.type === 'file')) return null;
 
         const file = {
-            id: nextId(),
+            id: this._uniqueId(),
             name: name,
             type: 'file',
             content: content,
@@ -309,8 +381,15 @@ class IDBFileSystem {
 
         parent.children.push(file);
         this.sortChildren(parent);
-        await this._saveToDB();
-        return file;
+        try {
+            await this._saveToDB();
+            return file;
+        } catch (e) {
+            const idx = parent.children.indexOf(file);
+            if (idx !== -1) parent.children.splice(idx, 1);
+            console.error('添加文件保存失败:', e);
+            return null;
+        }
     }
 
     /**
@@ -322,7 +401,7 @@ class IDBFileSystem {
         if (parent.children.some(c => c.name === name && c.type === 'folder')) return null;
 
         const folder = {
-            id: nextId(),
+            id: this._uniqueId(),
             name: name,
             type: 'folder',
             content: '',
@@ -332,8 +411,15 @@ class IDBFileSystem {
 
         parent.children.push(folder);
         this.sortChildren(parent);
-        await this._saveToDB();
-        return folder;
+        try {
+            await this._saveToDB();
+            return folder;
+        } catch (e) {
+            const idx = parent.children.indexOf(folder);
+            if (idx !== -1) parent.children.splice(idx, 1);
+            console.error('添加文件夹保存失败:', e);
+            return null;
+        }
     }
 
     /**
@@ -345,8 +431,15 @@ class IDBFileSystem {
         const idx = node.parent.children.indexOf(node);
         if (idx === -1) return false;
         node.parent.children.splice(idx, 1);
-        await this._saveToDB();
-        return true;
+        try {
+            await this._saveToDB();
+            return true;
+        } catch (e) {
+            // 保存失败：回滚内存树，避免界面与数据失去同步后无法再次删除
+            node.parent.children.splice(idx, 0, node);
+            console.error('删除节点保存失败:', e);
+            return false;
+        }
     }
 
     /**
@@ -356,9 +449,16 @@ class IDBFileSystem {
         const node = this.findNode(id);
         if (!node || !node.parent) return false;
         if (node.parent.children.some(c => c.name === newName && c.id !== id)) return false;
+        const oldName = node.name;
         node.name = newName;
-        await this._saveToDB();
-        return true;
+        try {
+            await this._saveToDB();
+            return true;
+        } catch (e) {
+            node.name = oldName;
+            console.error('重命名保存失败:', e);
+            return false;
+        }
     }
 
     /**
@@ -367,9 +467,16 @@ class IDBFileSystem {
     async updateContent(id, content) {
         const node = this.findNode(id);
         if (!node || node.type !== 'file') return false;
+        const oldContent = node.content;
         node.content = content;
-        await this._saveToDB();
-        return true;
+        try {
+            await this._saveToDB();
+            return true;
+        } catch (e) {
+            node.content = oldContent;
+            console.error('保存文件内容失败:', e);
+            return false;
+        }
     }
 
     /**
@@ -448,6 +555,8 @@ class IDBFileSystem {
         try {
             const data = JSON.parse(jsonStr);
             this.root = this._deserializeNode(data);
+            this._syncIdCounter();
+            this._repairDuplicateIds();
             await this._saveToDB();
             return true;
         } catch (e) {
@@ -461,6 +570,7 @@ class IDBFileSystem {
      */
     async reset() {
         this.root = this._createDefaultFS();
+        this._syncIdCounter();
         await this._saveToDB();
     }
 }
@@ -1208,8 +1318,23 @@ class CifaPlayground {
             if (tab) this.closeTab(tab.id);
         }
 
-        await this.fs.deleteNode(nodeId);
-        this.renderFileTree();
+        let deleted = false;
+        try {
+            deleted = await this.fs.deleteNode(nodeId);
+        } catch (e) {
+            console.error('删除文件失败:', e);
+        } finally {
+            // 无论删除是否成功都刷新文件树，保证界面与内存状态一致
+            this.renderFileTree();
+        }
+
+        if (!deleted) {
+            const reason = !node.parent
+                ? '工作区根目录不能删除'
+                : '浏览器存储写入失败，请重试或清理浏览器存储空间';
+            this.appendOutput('error', `删除失败：${node.name}（${reason}）`);
+            this.selectBottomTab('output');
+        }
     }
 
     /* =========================================================
