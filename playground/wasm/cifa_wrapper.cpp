@@ -106,6 +106,7 @@ struct JsErrorMessage {
     size_t line;
     size_t col;
     std::string message;
+    std::string source;    // 出错行源码文本（引擎提供时才有）
 };
 
 // 执行结果结构体
@@ -117,14 +118,67 @@ struct ExecuteResult {
     std::string output;
 };
 
-// 将 Cifa 错误信息转换为 JsErrorMessage
+// 将 Cifa 错误信息转换为 JsErrorMessage（并携带出错行源码文本）
 template <typename T>
 std::vector<JsErrorMessage> convertErrors(const T& src) {
     std::vector<JsErrorMessage> dst;
     for (const auto& e : src) {
-        dst.push_back({e.filename, e.line, e.col, e.message});
+        JsErrorMessage j = {e.filename, e.line, e.col, e.message, ""};
+        if (e.has_source_text) {
+            j.source = e.source_text;
+        }
+        dst.push_back(std::move(j));
     }
     return dst;
+}
+
+static std::string objectToString(const Object& obj);    // 前向声明（定义在下方）
+
+// 编译失败时组装错误结果（execute / executeWithFiles 共用）
+static ExecuteResult makeCompileErrorResult(Cifa& cifa, StdoutCapture& capture) {
+    ExecuteResult result;
+    result.success = false;
+    result.output = capture.finish();
+    logToConsole(result.output);
+    result.errors = convertErrors(cifa.get_errors());
+    return result;
+}
+
+// 执行已编译的 Ast 并组装完整结果（execute / executeWithFiles 共用）
+static ExecuteResult finishRun(Cifa& cifa, Ast& program, StdoutCapture& capture) {
+    ExecuteResult result;
+    result.success = false;
+
+    // 通过新 API run(Ast) 执行；entry_label 为空表示从第一个顶层节点开始
+    Object obj = cifa.run(program);
+
+    result.output = capture.finish();
+    // 同时保留浏览器控制台输出（console.log）
+    logToConsole(result.output);
+
+    // 检查语法/静态错误
+    if (cifa.has_error()) {
+        result.errors = convertErrors(cifa.get_errors());
+        return result;
+    }
+
+    // 检查运行时错误
+    if (obj.getSpecialType() == "Error") {
+        auto runtimeErrors = convertErrors(cifa.get_errors());
+        if (!runtimeErrors.empty()) {
+            result.errors = runtimeErrors;
+            result.runtimeError = runtimeErrors.front().message;
+        } else {
+            std::string runtimeErr = cifa.get_runtime_error();
+            result.runtimeError = runtimeErr.empty() ? "Runtime error occurred" : runtimeErr;
+        }
+        return result;
+    }
+
+    // 成功执行
+    result.success = true;
+    result.value = objectToString(obj);
+    return result;
 }
 
 // 将 Object 转换为字符串（处理所有类型）
@@ -164,51 +218,23 @@ ExecuteResult execute(const std::string& code) {
     // 禁用 stderr 输出，通过 API 获取错误
     cifa.set_output_error(false);
 
-    // 执行脚本（新版 run_script 已支持 #include 处理）
-    Object obj = cifa.run_script(code);
-
-    // 获取捕获的输出
-    result.output = capture.finish();
-    // 同时保留浏览器控制台输出（console.log）
-    logToConsole(result.output);
-
-    // 检查语法错误
-    if (cifa.has_error()) {
-        result.errors = convertErrors(cifa.get_errors());
-        return result;
+    // 使用新的编译/执行分离 API：先编译成 Ast（不执行），编译失败时直接返回语法/静态错误
+    auto program = cifa.compile_script(code);
+    if (!program) {
+        return makeCompileErrorResult(cifa, capture);
     }
 
-    // 检查运行时错误
-    if (obj.getSpecialType() == "Error") {
-        auto runtimeErrors = convertErrors(cifa.get_errors());
-        if (!runtimeErrors.empty()) {
-            result.errors = runtimeErrors;
-            result.runtimeError = runtimeErrors.front().message;
-        } else {
-            std::string runtimeErr = cifa.get_runtime_error();
-            result.runtimeError = runtimeErr.empty() ? "Runtime error occurred" : runtimeErr;
-        }
-        return result;
-    }
-
-    // 成功执行
-    result.success = true;
-    result.value = objectToString(obj);
-
-    return result;
+    // 编译成功后再执行
+    return finishRun(cifa, program, capture);
 }
 
 // 仅语法检查（用于实时 linting）
+// 新引擎提供 compile_script：只编译不执行，实时检查更快，且不会触发运行时副作用（如死循环）
 std::vector<JsErrorMessage> lint(const std::string& code) {
     Cifa cifa;
     cifa.set_output_error(false);
 
-    // 设置较短的循环限制，因为 lint 不需要真正执行
-    cifa.max_loop_iterations = 100;
-    cifa.max_call_depth = 10;
-
-    // 运行脚本以触发语法检查（新版 run_script 已支持 #include 处理）
-    cifa.run_script(code);
+    cifa.compile_script(code);
 
     return convertErrors(cifa.get_errors());
 }
@@ -216,14 +242,34 @@ std::vector<JsErrorMessage> lint(const std::string& code) {
 // 获取内置函数列表（用于自动补全提示）
 std::vector<std::string> getBuiltinFunctions() {
     return {
-        "abs", "sqrt", "pow", "sin", "cos", "tan", "asin", "acos", "atan",
-        "exp", "log", "log10", "ceil", "floor", "round", "max", "min",
-        "println", "to_string", "size", "strlen", "strcmp", "strcat",
-        // 新增的数学函数
-        "cbrt", "trunc", "nearbyint", "rint", "atan2", "log2",
-        "hypot", "fmod", "remainder", "erf", "erfc", "tgamma", "lgamma",
-        "copysign", "fdim", "fmax", "fmin"
+        // 输出 / 字符串 / 类型转换
+        "print", "println", "sprintf", "format", "to_string", "to_number", "type", "size",
+        "strlen", "strcmp", "strcat", "random", "exit",
+        // 数学函数
+        "abs", "sqrt", "cbrt", "round", "trunc", "nearbyint", "rint", "ceil", "floor",
+        "sin", "cos", "tan", "asin", "acos", "atan", "atan2",
+        "sinh", "cosh", "tanh", "exp", "log", "log2", "log10", "pow", "hypot", "fmod",
+        "remainder", "erf", "erfc", "tgamma", "lgamma", "copysign", "fdim", "fmax", "fmin",
+        "max", "min",
+        // 动态执行
+        "run_string", "run_file"
     };
+}
+
+// 辅助函数：将单个文件写入 Emscripten VFS（用于以编辑器最新内容覆盖入口文件）
+static void writeFileToVFS(const std::string& relPath, const std::string& content) {
+    const std::string fullPath = "/workspace/" + relPath;
+    const size_t lastSlash = fullPath.find_last_of('/');
+    if (lastSlash != std::string::npos) {
+        const std::string parentDir = fullPath.substr(0, lastSlash);
+        const std::string js = "FS.mkdirTree('" + parentDir + "')";
+        emscripten_run_script(js.c_str());
+    }
+    std::ofstream ofs(fullPath);
+    if (ofs.is_open()) {
+        ofs << content;
+        ofs.close();
+    }
 }
 
 // 辅助函数：清理 VFS 中的 /workspace 目录
@@ -283,6 +329,9 @@ ExecuteResult executeWithFiles(const std::string& code, const std::string& filen
     const std::vector<std::string>& paths, const std::vector<std::string>& contents) {
     writeToVFS(paths, contents);
 
+    // 用编辑器中当前内容覆盖入口文件（filename 为相对 /workspace 的路径）
+    writeFileToVFS(filename, code);
+
     // 重定向 C 层 stdout
     StdoutCapture capture;
 
@@ -294,73 +343,29 @@ ExecuteResult executeWithFiles(const std::string& code, const std::string& filen
     // 设置 #include 搜索目录为 /workspace
     cifa.set_include_dirs({"/workspace"});
 
-    // 使用 run_script 执行，新版 API 会自动处理 #include
-    // 同时设置当前文件的目录作为搜索路径
-    std::string currentDir = "/workspace";
-    size_t lastSlash = filename.find_last_of('/');
-    if (lastSlash != std::string::npos) {
-        currentDir = "/workspace/" + filename.substr(0, lastSlash);
+    // 通过 compile_file / run 执行。run_file 会把入口文件所在目录加入 #include 搜索路径，
+    // 因此子目录文件之间的相对 include 也能正确解析
+    auto program = cifa.compile_file("/workspace/" + filename);
+    if (!program) {
+        return makeCompileErrorResult(cifa, capture);
     }
-
-    // 构建完整文件路径用于设置文件名上下文
-    std::string fullPath = std::string("/workspace/") + filename;
-
-    // 读取文件内容（如果存在于 VFS 中）
-    std::ifstream ifs(fullPath);
-    Object obj;
-    if (ifs.is_open()) {
-        std::string fileContent((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
-        // 合并 code 和文件内容（code 优先，因为可能是从编辑器直接传入的最新内容）
-        obj = cifa.run_script(code);
-    } else {
-        // 文件不在 VFS 中，直接使用传入的 code
-        obj = cifa.run_script(code);
-    }
-
-    ExecuteResult result;
-    result.output = capture.finish();
-    // 同时保留浏览器控制台输出（console.log）
-    logToConsole(result.output);
-
-    if (cifa.has_error()) {
-        result.success = false;
-        result.errors = convertErrors(cifa.get_errors());
-        return result;
-    }
-
-    if (obj.getSpecialType() == "Error") {
-        result.success = false;
-        auto runtimeErrors = convertErrors(cifa.get_errors());
-        if (!runtimeErrors.empty()) {
-            result.errors = runtimeErrors;
-            result.runtimeError = runtimeErrors.front().message;
-        } else {
-            std::string runtimeErr = cifa.get_runtime_error();
-            result.runtimeError = runtimeErr.empty() ? "Runtime error occurred" : runtimeErr;
-        }
-        return result;
-    }
-
-    result.success = true;
-    result.value = objectToString(obj);
-    return result;
+    return finishRun(cifa, program, capture);
 }
 
 // 将虚拟文件写入 Emscripten VFS，然后进行语法检查（支持 #include）
 std::vector<JsErrorMessage> lintWithFiles(const std::string& code, const std::string& filename,
     const std::vector<std::string>& paths, const std::vector<std::string>& contents) {
     writeToVFS(paths, contents);
+    writeFileToVFS(filename, code);
 
     Cifa cifa;
     cifa.set_output_error(false);
-    cifa.max_loop_iterations = 100;
-    cifa.max_call_depth = 10;
 
     // 设置 #include 搜索目录为 /workspace
     cifa.set_include_dirs({"/workspace"});
 
-    // 使用 run_script 进行语法检查，新版 API 会自动处理 #include
-    cifa.run_script(code);
+    // 只编译不执行，纯静态检查（compile_file 会把入口文件所在目录加入 #include 搜索路径）
+    cifa.compile_file("/workspace/" + filename);
 
     return convertErrors(cifa.get_errors());
 }
@@ -371,7 +376,8 @@ EMSCRIPTEN_BINDINGS(cifa_module) {
         .field("filename", &JsErrorMessage::filename)
         .field("line", &JsErrorMessage::line)
         .field("col", &JsErrorMessage::col)
-        .field("message", &JsErrorMessage::message);
+        .field("message", &JsErrorMessage::message)
+        .field("source", &JsErrorMessage::source);
 
     // 注册执行结果结构体
     value_object<ExecuteResult>("ExecuteResult")

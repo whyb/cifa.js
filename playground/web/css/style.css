@@ -708,6 +708,15 @@ html, body {
     color: var(--fg-primary);
 }
 
+.problem-source {
+    color: var(--fg-muted);
+    font-size: 11px;
+    margin-top: 2px;
+    white-space: pre-wrap;
+    word-break: break-all;
+    opacity: 0.85;
+}
+
 /* ---------- Empty State ---------- */
 .empty-state {
     display: flex;

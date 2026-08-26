@@ -22,6 +22,7 @@ const EXAMPLE_GROUPS = [
         items: [
             { id: 'hello', name: 'Hello World', code: `println("Hello, Cifa Script!");\n\nint x = 10;\ndouble y = 3.14;\nstring msg = "Welcome";\n\nprintln("x = ", x);\nprintln("y = ", y);\nprintln(msg);\n\nreturn 0;` },
             { id: 'empty_statement', name: '空语句', code: `int x = 10;;;\nif (x > 5) {}\nelse ;\nwhile(false){;}\nfor(;false;);\nreturn x;` },
+            { id: 'numeric_radix', name: '进制字面量 (0x/0b/0)', code: `// 引擎新支持的进制字面量\nint hex = 0xFF;      // 255\nint hex2 = 0X10;     // 16\nint bin = 0b1010;    // 10\nint bin2 = 0B11;     // 3\nint oct = 077;       // 63 (前导 0 = 八进制)\n\nprintln("hex  = ", hex);\nprintln("hex2 = ", hex2);\nprintln("bin  = ", bin);\nprintln("bin2 = ", bin2);\nprintln("oct  = ", oct);\n\nreturn hex + bin + oct;` },
         ]
     },
     {
@@ -352,6 +353,36 @@ class IDBFileSystem {
             }
         }
         return null;
+    }
+
+    /**
+     * 获取节点相对根目录的路径（例如 "src/main.c"；根目录本身返回 ""）
+     */
+    getNodePath(node) {
+        if (!node) return '';
+        const parts = [];
+        let n = node;
+        while (n && n !== this.root) {
+            parts.unshift(n.name);
+            n = n.parent;
+        }
+        return parts.join('/');
+    }
+
+    /**
+     * 按相对路径查找节点（例如 "src/main.c"）
+     */
+    findNodeByPath(path) {
+        if (!path) return null;
+        const parts = String(path).split('/').filter(Boolean);
+        let node = this.root;
+        for (const part of parts) {
+            if (!node.children) return null;
+            const child = node.children.find((c) => c.name === part);
+            if (!child) return null;
+            node = child;
+        }
+        return node;
     }
 
     /**
@@ -711,15 +742,19 @@ class CifaPlayground {
             require(['vs/editor/editor.main'], () => {
                 monaco.languages.register({ id: 'cifa' });
                 monaco.languages.setMonarchTokensProvider('cifa', {
-                    keywords: ['auto', 'break', 'case', 'continue', 'default', 'do', 'else', 'for', 'if', 'return', 'struct', 'switch', 'while', 'int', 'float', 'double', 'string', 'char', 'true', 'false', 'include'],
+                    keywords: ['auto', 'break', 'case', 'continue', 'default', 'do', 'else', 'for', 'if', 'return', 'struct', 'switch', 'while', 'int', 'float', 'double', 'string', 'char', 'bool', 'true', 'false', 'goto', 'include'],
                     operators: ['=', '>', '<', '!', '~', '?', ':', '==', '<=', '>=', '!=', '&&', '||', '++', '--', '+', '-', '*', '/', '&', '|', '^', '%', '<<', '>>', '+=', '-=', '*=', '/=', '&=', '|=', '^=', '%='],
                     tokenizer: {
                         root: [
                             [/[a-zA-Z_]\w*/, { cases: { '@keywords': 'keyword', '@default': 'identifier' } }],
-                            [/\d*\.\d+/, 'number.float'],
-                            [/\d+/, 'number'],
+                            [/0[xX][0-9a-fA-F]+/, 'number.hex'],
+                            [/0[bB][01]+/, 'number.binary'],
+                            [/0[0-7]+/, 'number.octal'],
+                            [/(?:\d+\.\d*|\.\d+)(?:[eE][+-]?\d+)?/, 'number.float'],
+                            [/\d+(?:[eE][+-]?\d+)?/, 'number'],
                             [/"/, { token: 'string.quote', bracket: '@open', next: '@string' }],
                             [/\/\/.*$/, 'comment'],
+                            [/[/\*][\s\S]*?[\*]\//, 'comment'],
                             [/[{}()\[\]]/, '@brackets']
                         ],
                         string: [[/[^\\"]+/, 'string'], [/"/, { token: 'string.quote', bracket: '@close', next: '@pop' }]]
@@ -796,6 +831,29 @@ class CifaPlayground {
     switchToTabByName(fileName) {
         const tab = this.tabs.find(t => t.name === fileName);
         if (tab) this.activateTab(tab.id);
+    }
+
+    /* ---- Switch to tab by file path (supports sub-folders) ---- */
+    switchToTabByPath(filePath) {
+        if (!filePath) return;
+        // 1) 先尝试按标签名（含最后一段文件名）匹配
+        const tab = this.tabs.find((t) => t.name === filePath || t.name === filePath.split('/').pop());
+        if (tab) {
+            this.activateTab(tab.id);
+            return;
+        }
+        // 2) 在文件树中按相对路径查找节点并打开
+        const node = this.fs.findNodeByPath(filePath);
+        if (node) {
+            this.openFile(node.id);
+        }
+    }
+
+    /* ---- 将引擎报告的文件路径转换为文件树相对路径（去掉 /workspace/ 前缀） ---- */
+    resolveErrorFilePath(filePath) {
+        if (!filePath) return '';
+        if (filePath === '<script>') return filePath;
+        return String(filePath).replace(/^\/?workspace\//, '');
     }
 
     /* ---- Convert JS array to Emscripten VectorString ---- */
@@ -1357,7 +1415,7 @@ class CifaPlayground {
             const paths = this.toVectorString(allFiles.map(f => f.path));
             const contents = this.toVectorString(allFiles.map(f => f.content));
             const node = this.fs.findNode(tab.fileId);
-            const filename = node ? node.name : 'main.c';
+            const filename = node ? this.fs.getNodePath(node) : 'main.c';
             rawErrors = this.cifaModule.lintWithFiles(code, filename, paths, contents);
             this.disposeVectorString(paths, contents);
         } else {
@@ -1374,7 +1432,8 @@ class CifaPlayground {
             filename: String(e.filename || ''),
             line: Number(e.line) || 1,
             col: Number(e.col) || 1,
-            message: String(e.message || 'Unknown error')
+            message: String(e.message || 'Unknown error'),
+            source: String(e.source || '')
         });
         if (!errors) return [];
         if (Array.isArray(errors)) {
@@ -1407,7 +1466,17 @@ class CifaPlayground {
         // 只对当前活动文件的错误设置 Monaco 标记（其他文件的行号在当前编辑器中无意义）
         const tab = this.getActiveTab();
         const currentFileName = tab ? tab.name : '';
-        const currentFileErrors = errors.filter((e) => !e.filename || e.filename === '<script>' || e.filename === currentFileName);
+        const currentFilePath = (tab && tab.fileId)
+            ? (() => {
+                const n = this.fs.findNode(tab.fileId);
+                return n ? this.fs.getNodePath(n) : '';
+            })()
+            : '';
+        const currentFileErrors = errors.filter((e) => {
+            if (!e.filename || e.filename === '<script>') return true;
+            const f = this.resolveErrorFilePath(e.filename);
+            return f === currentFilePath || f === currentFileName;
+        });
         const markers = currentFileErrors.map((e) => ({
             startLineNumber: e.line, startColumn: e.col,
             endLineNumber: e.line, endColumn: e.col + 1,
@@ -1426,10 +1495,15 @@ class CifaPlayground {
             let html = '<table class="problems-table"><thead><tr><th></th><th>描述</th><th>文件</th><th>行</th></tr></thead><tbody>';
             for (let i = 0; i < errors.length; i++) {
                 const e = errors[i];
-                const fileName = (e.filename && e.filename !== '<script>') ? e.filename : (currentFileName || 'main.c');
+                const fileName = (e.filename && e.filename !== '<script>')
+                    ? this.resolveErrorFilePath(e.filename)
+                    : (currentFileName || 'main.c');
+                const sourceHtml = (e.source && e.source.length > 0)
+                    ? `<div class="problem-source">${this.escapeHtml(e.source)}</div>`
+                    : '';
                 html += `<tr data-line="${e.line}" data-col="${e.col}" data-file="${this.escapeHtml(fileName)}">` +
                     `<td>${ICONS.error}</td>` +
-                    `<td class="problem-message">${this.escapeHtml(e.message)}</td>` +
+                    `<td class="problem-message">${this.escapeHtml(e.message)}${sourceHtml}</td>` +
                     `<td class="problem-file">${this.escapeHtml(fileName)}</td>` +
                     `<td class="problem-line">${e.line}</td></tr>`;
             }
@@ -1441,9 +1515,9 @@ class CifaPlayground {
                     const line = parseInt(row.dataset.line, 10);
                     const col = parseInt(row.dataset.col, 10);
                     const fileName = row.dataset.file;
-                    // 如果错误来自其他文件，先切换到该文件的标签页
-                    if (fileName && fileName !== '<script>' && fileName !== currentFileName) {
-                        this.switchToTabByName(fileName);
+                    // 如果错误来自其他文件，先切换到该文件的标签页（按相对路径匹配）
+                    if (fileName && fileName !== '<script>' && fileName !== currentFileName && fileName !== currentFilePath) {
+                        this.switchToTabByPath(fileName);
                     }
                     this.editor.revealLineInCenter(line);
                     this.editor.setPosition({ lineNumber: line, column: col });

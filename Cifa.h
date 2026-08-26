@@ -1,16 +1,20 @@
 ﻿#pragma once
 #include <any>
+#include <array>
 #include <cmath>
+#include <deque>
 #include <format>
 #include <functional>
 #include <list>
 #include <map>
+#include <memory>
 #include <set>
 #include <stdexcept>
 #include <string>
 #include <tuple>
 #include <type_traits>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -18,7 +22,6 @@ namespace cifa
 {
 struct CalUnit;
 class Cifa;
-using import_func_type = int (*)(Cifa*);
 
 struct Object
 {
@@ -171,23 +174,26 @@ struct Object
 private:
     static void report_runtime_error(const std::string& message, const Object* source)
     {
-        if (runtime_error_reporter)
+        if (!runtime_error_reporters.empty())
         {
-            runtime_error_reporter(message, source);
+            runtime_error_reporters.back()(message, source);
         }
     }
 
     static void set_runtime_error_reporter(const std::function<void(const std::string&, const Object*)>& reporter)
     {
-        runtime_error_reporter = reporter;
+        runtime_error_reporters.push_back(reporter);
     }
 
     static void clear_runtime_error_reporter()
     {
-        runtime_error_reporter = nullptr;
+        if (!runtime_error_reporters.empty())
+        {
+            runtime_error_reporters.pop_back();
+        }
     }
 
-    inline static std::function<void(const std::string&, const Object*)> runtime_error_reporter;
+    inline static thread_local std::vector<std::function<void(const std::string&, const Object*)>> runtime_error_reporters;
 
     std::any value;
     std::string type1;        //特别的类型，用于Error、break、continue
@@ -254,34 +260,36 @@ struct Function2
 
 using FunctionOverloads = std::unordered_map<size_t, Function2>;
 
-template <typename T>
-bool vector_have(const std::vector<T>& ops, const T& op)
+struct SourceLineInfo
 {
-    for (auto& o : ops)
-    {
-        if (op == o)
-        {
-            return true;
-        }
-    }
-    return false;
-}
+    std::string filename;
+    size_t line = 0;
+    std::string text;
+};
 
-template <typename T>
-bool vector_have(const std::vector<std::vector<T>>& ops, const T& op)
+class Ast
 {
-    for (auto& ops1 : ops)
-    {
-        for (auto& o : ops1)
-        {
-            if (op == o)
-            {
-                return true;
-            }
-        }
-    }
-    return false;
-}
+    friend class Cifa;
+
+    CalUnit root;
+    std::unordered_map<std::string, size_t> labels;
+    std::unordered_map<std::string, FunctionOverloads> functions;
+    std::unordered_map<std::string, std::vector<std::string>> struct_defs;
+    std::vector<SourceLineInfo> source_line_infos;
+    bool compiling = false;
+    bool compiled = false;
+    bool compile_failed = false;
+
+public:
+    Ast() = default;
+    Ast(const Ast&) = delete;
+    Ast& operator=(const Ast&) = delete;
+    Ast(Ast&&) noexcept = default;
+    Ast& operator=(Ast&&) noexcept = default;
+
+    bool valid() const { return compiled && !compile_failed; }
+    explicit operator bool() const { return valid(); }
+};
 
 class Cifa
 {
@@ -348,27 +356,28 @@ private:
     //运算符，此处的顺序即优先级，单目和右结合由下面的列表判断
     inline static const std::vector<std::vector<std::string>> ops = { { "::", ".", "++", "--" }, { "~", "!" }, { "*", "/", "%" }, { "+", "-" }, { "<<", ">>" }, { ">", "<", ">=", "<=" }, { "==", "!=" }, { "&" }, { "^" }, { "|" }, { "&&" }, { ":", "?" }, { "||" }, { "=", "*=", "/=", "%=", "+=", "-=", "<<=", ">>=", "&=", "|=", "^=" }, { "," } };
     //单目运算符全部是右结合
-    inline static const std::vector<std::string> ops_single = { "++", "--", "~", "!", "()++", "()--" };
+    inline static const std::unordered_set<std::string> ops_single = { "++", "--", "~", "!", "()++", "()--" };
     //右结合的运算符，注意+-既有单目又有双目，因此不能简单地放在单目列表中
-    inline static const std::vector<std::string> ops_right = { "=", "*=", "/=", "%=", "+=", "-=", "<<=", ">>=", "&=", "|=", "^=" };
-    //关键字，在表中的位置为其所需参数个数
-    inline static const std::vector<std::vector<std::string>> keys = { { "true", "false" }, { "break", "continue", "else", "return", "default", "goto" }, { "if", "for", "while", "do", "switch", "case" } };
+    inline static const std::unordered_set<std::string> ops_right = { "=", "*=", "/=", "%=", "+=", "-=", "<<=", ">>=", "&=", "|=", "^=" };
+    //关键字，在表中的下标为其所需子节点个数
+    inline static const std::array<std::unordered_set<std::string>, 3> keys = { {
+        { "true", "false" },
+        { "break", "continue", "else", "return", "default", "goto" },
+        { "if", "for", "while", "do", "switch", "case" },
+    } };
     //类型列表，注意auto虽然不是真正的类型，但在语法分析阶段当作类型处理，实际运行时会被忽略
-    inline static const std::vector<std::string> types = { "auto", "int", "float", "double", "string", "char" };
+    inline static const std::unordered_set<std::string> types = { "auto", "int", "float", "double", "string", "char" };
     //内置的运算符表示列表，用户可扩展运算符时会用到，注意这些运算符在语法分析阶段会被转换为对应的符号（如and转换为&&），因此用户扩展时也应使用符号形式的运算符
     inline static const std::map<std::string, std::string> op_representations = { { "and", "&&" }, { "and_eq", "&=" }, { "bitand", "&" }, { "bitor", "|" }, { "compl", "~" }, { "not", "!" }, { "not_eq", "!=" }, { "or", "||" }, { "or_eq", "|=" }, { "xor", "^" }, { "xor_eq", "^=" }, { "<%", "{" }, { "%>", "}" }, { "<:", "[" }, { ":>", "]" }, { "%:", "#" }, { "%:%:", "##" } };
     //内置的数组/map方法列表
     inline static const std::set<std::string> builtin_methods = { "push_back", "pop_back", "resize", "insert", "erase", "clear", "contains", "keys" };
 
-    //两个函数表都是全局的
     std::unordered_map<std::string, func_type> functions;     //在宿主程序中注册的函数
-    std::unordered_map<std::string, FunctionOverloads> functions2; //在cifa程序中定义的函数，按参数个数重载
-    std::unordered_map<std::string, std::vector<std::string>> struct_defs;    //用户定义的 struct 类型及其字段列表
+    std::unordered_map<std::string, FunctionOverloads> functions2;    //执行脚本后注册的全局脚本函数
+    std::unordered_map<std::string, std::vector<std::string>> struct_defs;    //执行脚本后注册的全局 struct
 
     std::unordered_map<std::string, void*> user_data;
     std::unordered_map<std::string, Object> global_variables;    //C++ 注册变量与脚本顶层变量共用的实例全局表
-    std::vector<void*> imported_modules;                   //通过 import() 加载的动态库句柄
-    std::vector<std::string> imported_module_paths;        //避免重复加载同一个动态库
     std::vector<std::string> include_dirs;                  //#include 搜索目录
 
     struct ErrorMessage
@@ -403,31 +412,36 @@ private:
         }
     };
 
-    std::set<ErrorMessage, ErrorMessageComp> errors;
-
-    struct SourceLineInfo
-    {
-        std::string filename;
-        size_t line = 0;
-        std::string text;
-    };
-
-    std::vector<std::string> runtime_call_stack;
-    std::vector<std::string> runtime_error_call_stack;
-    std::vector<std::string> runtime_source_lines;
-    std::vector<SourceLineInfo> runtime_source_line_infos;
-    const std::vector<CalUnit>* active_function_arguments = nullptr;
-    const ObjectVector* active_function_values = nullptr;
-    std::string runtime_error_message;
-    bool exit_requested = false;
-    int execution_depth = 0;
+    using ErrorSet = std::set<ErrorMessage, ErrorMessageComp>;
 
     struct ReturnState
     {
         bool has_value = false;
         Object value;
     };
-    std::vector<ReturnState> return_states;
+
+    struct ExecutionContext
+    {
+        explicit ExecutionContext(Ast& current_program) : program(current_program) { }
+
+        Ast& program;
+        size_t start_index = 0;
+        std::vector<std::string> runtime_call_stack;
+        std::vector<std::string> runtime_error_call_stack;
+        const std::vector<CalUnit>* active_function_arguments = nullptr;
+        const ObjectVector* active_function_values = nullptr;
+        std::string runtime_error_message;
+        std::vector<ReturnState> return_states;
+        ErrorSet errors;
+        bool exit_requested = false;
+    };
+
+    std::deque<ExecutionContext> execution_contexts;
+    Ast compilation_ast;
+    ErrorSet errors;
+    std::vector<std::string> runtime_error_call_stack;
+    std::string runtime_error_message;
+    bool last_exit_requested = false;
 
     bool output_error = true;
 
@@ -436,17 +450,24 @@ public:
     int max_call_depth = 1000;             //函数最大调用深度，防止无限递归
 
     Cifa();
-    ~Cifa();
+    ~Cifa() = default;
     Cifa(const Cifa&) = delete;
     Cifa& operator=(const Cifa&) = delete;
     Cifa(Cifa&&) = delete;
     Cifa& operator=(Cifa&&) = delete;
 
-    void register_function(const std::string& name, func_type func);
+    static bool is_valid_key(const std::string& key);
+    static std::string revise_key(const std::string& key);
+
+    bool register_function(const std::string& name, func_type func);
 
     template <typename R, typename... Args>
-    void register_function(const std::string& name, R (*func)(Args...))
+    bool register_function(const std::string& name, R (*func)(Args...))
     {
+        if (!validate_registration_name(name))
+        {
+            return false;
+        }
         functions[name] = [this, name, func](ObjectVector& args) -> Object
         {
             constexpr size_t argc = sizeof...(Args);
@@ -457,25 +478,35 @@ public:
             }
             return call_registered_function(func, args, std::index_sequence_for<Args...>{});
         };
+        return true;
     }
 
-    void register_user_data(const std::string& name, void* p);
-    void register_parameter(const std::string& name, Object o);
+    bool register_user_data(const std::string& name, void* p);
+    bool register_parameter(const std::string& name, Object o);
 
     template <typename T>
-    void register_parameter(const std::string& name, std::map<std::string, T> m)
+    bool register_parameter(const std::string& name, std::map<std::string, T> m)
     {
+        if (!validate_registration_name(name))
+        {
+            return false;
+        }
         ObjectMap omap;
         for (auto& [k, v] : m)
         {
             omap[k] = Object(v);
         }
         global_variables[name] = Object(std::move(omap));
+        return true;
     }
 
     template <typename T>
-    void register_vector(const std::string& name, const std::vector<T>& v)
+    bool register_vector(const std::string& name, const std::vector<T>& v)
     {
+        if (!validate_registration_name(name))
+        {
+            return false;
+        }
         std::vector<Object> arr;
         arr.reserve(v.size());
         for (auto& o : v)
@@ -483,6 +514,7 @@ public:
             arr.emplace_back(Object(o));
         }
         global_variables[name] = Object(std::move(arr));
+        return true;
     }
 
     void* get_user_data(const std::string& name);
@@ -493,7 +525,11 @@ public:
 
     Object run_file(const std::string& filename);    //从文件运行脚本，支持#include指令，并将文件所在目录作为搜索路径
 
-    bool has_error() const { return !errors.empty(); }
+    Ast compile_script(std::string script);    //解析并返回独立 AST，不执行
+    Ast compile_file(const std::string& filename);    //从文件解析并返回独立 AST，不执行
+    Object run(Ast& program, const std::string& entry_label = "");    //执行传入 AST；空标签从第一个顶层节点开始
+
+    bool has_error() const;
 
     std::string get_errors_str() const;
 
@@ -504,11 +540,11 @@ public:
 
     void set_output_error(bool oe) { output_error = oe; }
 
-    void request_exit() { exit_requested = true; }
-    bool is_exit_requested() const { return exit_requested; }
+    void request_exit();
+    bool is_exit_requested() const;
 
     std::string get_runtime_error() const;
-    bool has_runtime_error() const { return !runtime_error_message.empty(); }
+    bool has_runtime_error() const;
 
     //用户可扩展的运算符函数列表
     std::vector<std::function<Object(const Object&, const Object&)>> user_add, user_sub, user_mul, user_div, user_mod,
@@ -517,17 +553,29 @@ public:
         user_shift_left, user_shift_right;
 
 private:
+    static const std::unordered_set<std::string>& keyword_tokens();
+    static const std::unordered_set<std::string>& operator_tokens();
+    static const std::vector<std::unordered_set<std::string>>& operator_precedence_token_groups();
+
     Object eval_scoped(CalUnit& c, ScopeStack& scopes);
     Object run_function(const std::string& name, std::vector<CalUnit>& vc, ScopeStack& scopes);
-    Object run_execution(const std::function<Object()>& action);
+    Object run_execution(Ast& program, const std::function<Object()>& action);
+    void run_compilation(const std::function<void(Ast&)>& action);
     Object eval_builtin_method(const std::string& method_name, Object& obj, std::vector<CalUnit>& args, ScopeStack& scopes);
+    ErrorSet& active_errors();
+    const ErrorSet& active_errors() const;
+    const std::vector<SourceLineInfo>& active_source_line_infos() const;
+    void record_error(ErrorMessage error);
+    FunctionOverloads* find_script_function(const std::string& name);
+    const FunctionOverloads* find_script_function(const std::string& name) const;
+    const std::vector<std::string>* find_struct_definition(const std::string& name) const;
 
     void expand_comma(CalUnit& c1, std::vector<CalUnit>& v);
     CalUnit& find_right_side(CalUnit& c1);
     CalUnitType guess_char(char c);
     std::list<CalUnit> split(std::string& str);
-    CalUnit combine_all_cal(std::list<CalUnit>& ppp, bool curly = true, bool square = true, bool round = true, bool allow_labels = true);
-    std::list<CalUnit>::iterator inside_bracket(std::list<CalUnit>& ppp, std::list<CalUnit>& ppp2, const std::string& bl, const std::string& br);
+    CalUnit combine_all_cal(std::list<CalUnit>& ppp, bool curly = true, bool square = true, bool round = true,
+        bool allow_labels = true, bool global_scope = true);
     void combine_curly_bracket(std::list<CalUnit>& ppp);
     void combine_square_bracket(std::list<CalUnit>& ppp);
     void combine_round_bracket(std::list<CalUnit>& ppp);
@@ -535,18 +583,17 @@ private:
     void combine_semi(std::list<CalUnit>& ppp);
     void deal_special_keys(std::list<CalUnit>& ppp);
     void combine_keys(std::list<CalUnit>& ppp);
-    void combine_functions2(std::list<CalUnit>& ppp);
-    void combine_structs(std::list<CalUnit>& ppp);
+    void combine_functions2(std::list<CalUnit>& ppp, bool global_scope);
+    void combine_structs(std::list<CalUnit>& ppp, bool global_scope);
     void check_goto_targets(CalUnit& root);
 
     Object& get_parameter(CalUnit& c, ScopeStack& scopes, bool only_check = false);
-    Object& get_parameter(const std::string& name, ScopeStack& scopes);
+    Object& get_or_create_parameter(const std::string& name, ScopeStack& scopes, bool current_scope_only = false);
     Object& get_parameter_for_assign(CalUnit& c, ScopeStack& scopes, bool declare_current = false);
     Object& resolve_indexed_parameter(CalUnit& c, ScopeStack& scopes, bool only_check, bool declare_current, bool declaration_as_array);
-    Object& resolve_string_indexed_parameter(CalUnit& c, ScopeStack& scopes, const std::string& key, bool only_check, bool declare_current);
-    Object& resolve_nested_index(Object& element, CalUnit& c, size_t dim_index, ScopeStack& scopes, bool only_check);
     bool try_eval_array_literal(CalUnit& c, ScopeStack& scopes, Object& out);
     bool is_array_literal_candidate(CalUnit& c) const;
+    bool validate_registration_name(const std::string& name);
     Object* find_object_from_inner(ScopeStack& scopes, const std::string& name);
     bool has_return_value() const;
     Object& return_value();
@@ -556,14 +603,16 @@ private:
     bool is_control_signal(const Object& value, const std::string& signal) const;
     std::string format_runtime_error() const;
     void print_runtime_error() const;
-    bool import_module(const std::string& path);
-    void import_literal_modules(CalUnit& c);
+    Object make_error_result() const;
+    bool compile_pipeline(std::string str, Ast& program);
+    Object execute_program(Ast& program, size_t start_index = 0);
 
     void check_cal_unit(CalUnit& c, CalUnit* father, std::unordered_map<std::string, Object>& p);
     void check_non_block_body(CalUnit& c, const std::unordered_map<std::string, Object>& p);
 
     static std::string get_directory(const std::string& filepath);
     static bool is_absolute_path(const std::string& filepath);
+    static bool read_text_file(const std::string& filename, std::string& content);
     std::string preprocess_includes(const std::string& source, const std::string& current_file, const std::string& current_dir, const std::vector<std::string>& extra_include_dirs, std::set<std::string>& visited);
     template <typename... Args>
     void add_error(size_t line, size_t col, std::format_string<Args...> format, Args&&... args)
@@ -572,16 +621,17 @@ private:
         e.expanded_line = line;
         e.line = line;
         e.col = col;
-        if (line > 0 && line <= runtime_source_line_infos.size())
+        const auto& source_line_infos = active_source_line_infos();
+        if (line > 0 && line <= source_line_infos.size())
         {
-            const auto& source_line = runtime_source_line_infos[line - 1];
+            const auto& source_line = source_line_infos[line - 1];
             e.filename = source_line.filename;
             e.line = source_line.line;
             e.source_text = source_line.text;
             e.has_source_text = true;
         }
         e.message = std::format(format, std::forward<Args>(args)...);
-        errors.emplace(std::move(e));
+        record_error(std::move(e));
     }
 
     template <typename... Args>
@@ -592,10 +642,8 @@ private:
         e.line = line;
         e.col = col;
         e.message = std::format(format, std::forward<Args>(args)...);
-        errors.emplace(std::move(e));
+        record_error(std::move(e));
     }
-    Object run_pipeline(std::string str);
-
     template <typename... Args>
     void add_error(CalUnit& c, std::format_string<Args...> format, Args&&... args)
     {
@@ -603,16 +651,17 @@ private:
         e.expanded_line = c.line;
         e.line = c.line;
         e.col = c.col;
-        if (c.line > 0 && c.line <= runtime_source_line_infos.size())
+        const auto& source_line_infos = active_source_line_infos();
+        if (c.line > 0 && c.line <= source_line_infos.size())
         {
-            const auto& source_line = runtime_source_line_infos[c.line - 1];
+            const auto& source_line = source_line_infos[c.line - 1];
             e.filename = source_line.filename;
             e.line = source_line.line;
             e.source_text = source_line.text;
             e.has_source_text = true;
         }
         e.message = std::format(format, std::forward<Args>(args)...);
-        errors.emplace(std::move(e));
+        record_error(std::move(e));
     }
 
     //四则运算准许用户增加自定义功能
