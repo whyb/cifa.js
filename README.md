@@ -19,13 +19,32 @@ Cifa 脚本引擎的 Web 在线解释器，网站地址是： [https://whyb.gith
 
 ## 功能特性
 
-  - **Monaco Editor**: 采用 VS Code 同款内核，完美支持 C 语言语法高亮。
-  - **实时 Linting**: 编码过程中即时识别并标注语法错误（红波浪线）。
+  - **Monaco Editor**: 采用 VS Code 同款内核，支持 Cifa 语法高亮（含 0x/0b/0 进制字面量、goto 等）。
+  - **实时 Linting**: 编码过程中即时识别并标注语法/静态错误（红波浪线）。基于引擎的 compile_script 纯编译检查，不执行脚本，更安全、更快。
+  - **多文件 #include**: 以当前编辑文件为入口执行/检查，入口文件所在目录自动加入 #include 搜索路径，子目录之间的相对引用也能正确解析。
   - **Web Worker 隔离执行**: 脚本运行于后台独立线程，即便代码出现逻辑瑕疵也不会阻塞 UI 响应。
   - **VS 风格错误列表**: 底部集成专业错误汇总看板，双击错误项即可自动跳转定位至源码行。
   - **运行安全保护**: 内置循环计数与递归深度限制，有效预防死循环导致的系统挂起。
 
 关于Cifa脚本语法的更多信息参见： [cifa仓库](https://github.com/scarsty/cifa)
+
+## 引擎 API 同步说明
+
+本仓库的 Cifa 引擎已升级为「编译/执行分离」架构，Web 端对应的同步点如下：
+
+- **新 API**：
+  - `Ast compile_script(script)` / `Ast compile_file(filename)`：只编译不执行，返回可移动的独立 AST。
+  - `Object run(Ast& program, entry_label = "")`：执行已编译的 AST；可指定顶层标签作为入口。
+  - `run_script` / `run_file` 现在是 `compile_*` + `run` 的组合调用。
+- **Lint 变纯静态检查**：`lint` / `lintWithFiles` 改用 `compile_script` / `compile_file`，只报告语法与静态错误，不再真正执行脚本。
+- **多文件执行**：`executeWithFiles` / `lintWithFiles` 先把编辑器最新内容写入 VFS 的 /workspace 并覆盖入口文件，再以入口文件路径调用 `compile_file`/`run`，入口文件所在目录自动参与 #include 搜索。
+- **错误定位增强**：错误信息携带文件名（如 /workspace/sub/main.c）与出错行源码文本，Problems 面板会显示源码行，点击错误项可跨文件跳转到对应标签页。
+- **脚本语言新特性**：
+  - 十六进制 `0xFF`、二进制 `0b1010`、八进制 `077`（前导 0）字面量。
+  - `sprintf`（printf 风格格式化字符串）。
+  - 函数/结构体定义必须位于全局作用域（否则编译报错）。
+  - 注册函数/参数/向量/用户数据时会校验名称合法性。
+- **内置函数列表**已同步补充：`sprintf`、`format`、`to_number`、`type`、`random`、`exit`、`run_string`、`run_file` 等。
 
 ## 本地构建步骤
 
