@@ -211,10 +211,6 @@ ExecuteResult execute(const std::string& code) {
 
     Cifa cifa;
 
-    // 设置死循环保护
-    cifa.max_loop_iterations = 1000000;
-    cifa.max_call_depth = 500;
-
     // 禁用 stderr 输出，通过 API 获取错误
     cifa.set_output_error(false);
 
@@ -336,8 +332,6 @@ ExecuteResult executeWithFiles(const std::string& code, const std::string& filen
     StdoutCapture capture;
 
     Cifa cifa;
-    cifa.max_loop_iterations = 1000000;
-    cifa.max_call_depth = 500;
     cifa.set_output_error(false);
 
     // 设置 #include 搜索目录为 /workspace
