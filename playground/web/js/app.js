@@ -4,7 +4,7 @@
  */
 
 // JS/WASM 必须使用同一缓存版本，修改并重新构建 WASM 后应同步更新此值。
-const CIFA_ASSET_VERSION = '20260910-1';
+const CIFA_ASSET_VERSION = '20260910-2';
 
 /* =========================================================
    SVG Icons (inline)
@@ -1765,7 +1765,15 @@ class CifaPlayground {
         }
 
         if (result && result.success) {
-            this.appendOutput('success', `执行成功 (${duration}ms)`);
+            const formatMs = (value) => {
+                const ms = Number(value);
+                return Number.isFinite(ms) ? Math.round(ms * 100) / 100 : 0;
+            };
+            const compileMs = formatMs(result.compileMs);
+            const runMs = formatMs(result.runMs);
+            const wasmTotalMs = Number(result.totalMs);
+            const totalMs = Number.isFinite(wasmTotalMs) ? formatMs(wasmTotalMs) : duration;
+            this.appendOutput('success', `执行成功 (编译 ${compileMs}ms，运行 ${runMs}ms，总耗时 ${totalMs}ms)`);
             this.appendOutput('info', `返回值: ${result.value || '(no return value)'}`);
         } else {
             this.appendOutput('error', `执行失败 (${duration}ms)`);

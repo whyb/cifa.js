@@ -1,6 +1,7 @@
 #include <emscripten/bind.h>
 #include <emscripten.h>
 #include "Cifa.h"
+#include <chrono>
 #include <cstdio>
 #include <fstream>
 
@@ -116,6 +117,9 @@ struct ExecuteResult {
     std::vector<JsErrorMessage> errors;
     std::string runtimeError;
     std::string output;
+    double compileMs;
+    double runMs;
+    double totalMs;
 };
 
 // 将 Cifa 错误信息转换为 JsErrorMessage（并携带出错行源码文本）
@@ -134,10 +138,19 @@ std::vector<JsErrorMessage> convertErrors(const T& src) {
 
 static std::string objectToString(const Object& obj);    // 前向声明（定义在下方）
 
+using Clock = std::chrono::steady_clock;
+
+static double elapsedMs(Clock::time_point start) {
+    return std::chrono::duration<double, std::milli>(Clock::now() - start).count();
+}
+
 // 编译失败时组装错误结果（execute / executeWithFiles 共用）
-static ExecuteResult makeCompileErrorResult(Cifa& cifa, StdoutCapture& capture) {
+static ExecuteResult makeCompileErrorResult(Cifa& cifa, StdoutCapture& capture, double compileMs) {
     ExecuteResult result;
     result.success = false;
+    result.compileMs = compileMs;
+    result.runMs = 0.0;
+    result.totalMs = compileMs;
     result.output = capture.finish();
     logToConsole(result.output);
     result.errors = convertErrors(cifa.get_errors());
@@ -145,12 +158,16 @@ static ExecuteResult makeCompileErrorResult(Cifa& cifa, StdoutCapture& capture) 
 }
 
 // 执行已编译的 Ast 并组装完整结果（execute / executeWithFiles 共用）
-static ExecuteResult finishRun(Cifa& cifa, Ast& program, StdoutCapture& capture) {
+static ExecuteResult finishRun(Cifa& cifa, Ast& program, StdoutCapture& capture, double compileMs) {
     ExecuteResult result;
     result.success = false;
+    result.compileMs = compileMs;
 
     // 通过新 API run(Ast) 执行；entry_label 为空表示从第一个顶层节点开始
+    const auto runStart = Clock::now();
     Object obj = cifa.run(program);
+    result.runMs = elapsedMs(runStart);
+    result.totalMs = result.compileMs + result.runMs;
 
     result.output = capture.finish();
     // 同时保留浏览器控制台输出（console.log）
@@ -217,13 +234,15 @@ ExecuteResult execute(const std::string& code) {
     cifa.set_output_error(false);
 
     // 使用新的编译/执行分离 API：先编译成 Ast（不执行），编译失败时直接返回语法/静态错误
+    const auto compileStart = Clock::now();
     auto program = cifa.compile_script(code);
+    const double compileMs = elapsedMs(compileStart);
     if (!program) {
-        return makeCompileErrorResult(cifa, capture);
+        return makeCompileErrorResult(cifa, capture, compileMs);
     }
 
     // 编译成功后再执行
-    return finishRun(cifa, program, capture);
+    return finishRun(cifa, program, capture, compileMs);
 }
 
 // 仅语法检查（用于实时 linting）
@@ -341,11 +360,13 @@ ExecuteResult executeWithFiles(const std::string& code, const std::string& filen
 
     // 通过 compile_file / run 执行。run_file 会把入口文件所在目录加入 #include 搜索路径，
     // 因此子目录文件之间的相对 include 也能正确解析
+    const auto compileStart = Clock::now();
     auto program = cifa.compile_file("/workspace/" + filename);
+    const double compileMs = elapsedMs(compileStart);
     if (!program) {
-        return makeCompileErrorResult(cifa, capture);
+        return makeCompileErrorResult(cifa, capture, compileMs);
     }
-    return finishRun(cifa, program, capture);
+    return finishRun(cifa, program, capture, compileMs);
 }
 
 // 将虚拟文件写入 Emscripten VFS，然后进行语法检查（支持 #include）
@@ -381,7 +402,10 @@ EMSCRIPTEN_BINDINGS(cifa_module) {
         .field("value", &ExecuteResult::value)
         .field("errors", &ExecuteResult::errors)
         .field("runtimeError", &ExecuteResult::runtimeError)
-        .field("output", &ExecuteResult::output);
+        .field("output", &ExecuteResult::output)
+        .field("compileMs", &ExecuteResult::compileMs)
+        .field("runMs", &ExecuteResult::runMs)
+        .field("totalMs", &ExecuteResult::totalMs);
 
     // 注册向量类型
     register_vector<JsErrorMessage>("VectorJsErrorMessage");
