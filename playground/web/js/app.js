@@ -90,7 +90,81 @@ const EXAMPLE_GROUPS = [
             { id: 'to_string_number', name: '类型转换函数', code: `int n = 42;\ndouble f = 3.14;\nstring s = "123";\n\nstring str1 = to_string(n);\nstring str2 = to_string(f);\nprintln("字符串: ", str1, ", ", str2);\n\ndouble num = to_number(s);\nprintln("数字: ", num);\n\nreturn to_number("100") + 23;` },
             { id: 'size_function', name: 'Size 函数', code: `arr = {1, 2, 3, 4, 5};\nprintln("数组大小: ", size(arr));\n\nm["a"] = 1;\nm["b"] = 2;\nprintln("Map 大小: ", size(m));\n\nstring s = "Hello";\nprintln("字符串长度: ", size(s));\n\nreturn size(arr) + size(m);` },
             { id: 'type_function', name: 'type() 类型检查', code: `int empty_value;\narr = {1, 2};\nm["x"] = 1;\n\nprintln("empty  : ", type(empty_value));\nprintln("number : ", type(1));\nprintln("string : ", type("abc"));\nprintln("array  : ", type(arr));\nprintln("map    : ", type(m));\n\nint all_ok = type(empty_value) == "empty"\n          && type(1) == "number"\n          && type("abc") == "string"\n          && type(arr) == "array"\n          && type(m) == "map";\nprintln("全部正确: ", all_ok ? "true" : "false");\nreturn all_ok;` },
-        ]
+            { id: 'calc_pi_chudnovsky', name: '计算圆周率PI', code: `auto big_mul_int(a, factor) {
+    res = {};
+    int carry = 0;
+    int len = size(a);
+    for (int i = 0; i < len || carry > 0; i++) {
+        double val = carry;
+        if (i < len) {
+            val += a[i] * factor;
+        }
+        res.push_back(floor(fmod(val, 10000)));
+        carry = floor(val / 10000);
+    }
+    return res;
+}
+
+auto big_div_int(a, divisor) {
+    res = {};
+    int len = size(a);
+    if (len == 0) {
+        res.push_back(0);
+        return res;
+    }
+    double rem = 0;
+    tmp = {};
+    for (int i = len - 1; i >= 0; i--) {
+        double cur = rem * 10000 + a[i];
+        int q = floor(cur / divisor);
+        rem = fmod(cur, divisor);
+        tmp.push_back(q);
+    }
+    int tmp_len = size(tmp);
+    int start = 0;
+    while (start < tmp_len - 1 && tmp[start] == 0) {
+        start++;
+    }
+    for (int i = tmp_len - 1; i >= start; i--) {
+        res.push_back(tmp[i]);
+    }
+    return res;
+}
+
+string format_pi(pi_arr) {
+    int len = size(pi_arr);
+    if (len == 0) {
+        return "0.0000";
+    }
+    string str = "";
+    str = to_string(pi_arr[len - 1]) + ".";
+    for (int i = len - 2; i >= 0; i--) {
+        int v = pi_arr[i];
+        if (v < 10) str += "000" + to_string(v);
+        else if (v < 100) str += "00" + to_string(v);
+        else if (v < 1000) str += "0" + to_string(v);
+        else str += to_string(v);
+    }
+    return str;
+}
+
+base_val = {};
+int count = 9999; //这个越大，精度越高
+for (int i = 0; i < count; i++) {
+    base_val.push_back(0);
+}
+base_val.push_back(1);
+
+temp_big = big_mul_int(base_val, 42702181);
+pi_big = big_div_int(temp_big, 13591409);
+
+// 格式化并输出 PI
+string pi_str = format_pi(pi_big);
+println("计算高精度PI值 = " + pi_str);
+
+return pi_str;
+` },
+        ],
     },
     {
         name: '结构体',
@@ -1574,7 +1648,7 @@ class CifaPlayground {
                 const paths = this.toVectorString(allFiles.map(f => f.path));
                 const contents = this.toVectorString(allFiles.map(f => f.content));
                 const node = this.fs.findNode(tab.fileId);
-                const filename = node ? node.name : 'main.c';
+                const filename = node ? this.fs.getNodePath(node) : 'main.c';
                 result = this.cifaModule.executeWithFiles(code, filename, paths, contents);
                 this.disposeVectorString(paths, contents);
             } else {

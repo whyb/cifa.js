@@ -156,22 +156,24 @@ static ExecuteResult finishRun(Cifa& cifa, Ast& program, StdoutCapture& capture)
     // 同时保留浏览器控制台输出（console.log）
     logToConsole(result.output);
 
-    // 检查语法/静态错误
-    if (cifa.has_error()) {
-        result.errors = convertErrors(cifa.get_errors());
-        return result;
-    }
-
-    // 检查运行时错误
-    if (obj.getSpecialType() == "Error") {
+    // 新版引擎遇到运行时错误会设置状态并请求退出，返回值不一定再是 Error 对象；
+    // has_error() 同时会包含运行时错误，因此必须先检查运行时状态，避免丢失错误文本。
+    if (cifa.has_runtime_error() || obj.getSpecialType() == "Error") {
         auto runtimeErrors = convertErrors(cifa.get_errors());
         if (!runtimeErrors.empty()) {
             result.errors = runtimeErrors;
-            result.runtimeError = runtimeErrors.front().message;
-        } else {
-            std::string runtimeErr = cifa.get_runtime_error();
-            result.runtimeError = runtimeErr.empty() ? "Runtime error occurred" : runtimeErr;
         }
+        std::string runtimeErr = cifa.get_runtime_error();
+        if (runtimeErr.empty() && !runtimeErrors.empty()) {
+            runtimeErr = runtimeErrors.front().message;
+        }
+        result.runtimeError = runtimeErr.empty() ? "Runtime error occurred" : runtimeErr;
+        return result;
+    }
+
+    // 检查其余语法/静态错误
+    if (cifa.has_error()) {
+        result.errors = convertErrors(cifa.get_errors());
         return result;
     }
 
@@ -183,7 +185,7 @@ static ExecuteResult finishRun(Cifa& cifa, Ast& program, StdoutCapture& capture)
 
 // 将 Object 转换为字符串（处理所有类型）
 std::string objectToString(const Object& obj) {
-    if (!obj.hasValue()) {
+    if (!obj.hasValue() || obj.getSpecialType() == "NoValue") {
         return "(no return value)";
     }
     if (obj.isType<std::string>()) {
