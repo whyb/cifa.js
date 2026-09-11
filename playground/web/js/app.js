@@ -4,7 +4,7 @@
  */
 
 // JS/WASM 必须使用同一缓存版本，修改并重新构建 WASM 后应同步更新此值。
-const CIFA_ASSET_VERSION = '20260910-2';
+const CIFA_ASSET_VERSION = '20260911-1';
 
 /* =========================================================
    SVG Icons (inline)
@@ -24,6 +24,7 @@ const EXAMPLE_GROUPS = [
             { id: 'hello', name: 'Hello World', code: `println("Hello, Cifa Script!");\n\nint x = 10;\ndouble y = 3.14;\nstring msg = "Welcome";\n\nprintln("x = ", x);\nprintln("y = ", y);\nprintln(msg);\n\nreturn 0;` },
             { id: 'empty_statement', name: '空语句', code: `int x = 10;;;\nif (x > 5) {}\nelse ;\nwhile(false){;}\nfor(;false;);\nreturn x;` },
             { id: 'numeric_radix', name: '进制字面量 (0x/0b/0)', code: `// 引擎新支持的进制字面量\nint hex = 0xFF;      // 255\nint hex2 = 0X10;     // 16\nint bin = 0b1010;    // 10\nint bin2 = 0B11;     // 3\nint oct = 077;       // 63 (前导 0 = 八进制)\n\nprintln("hex  = ", hex);\nprintln("hex2 = ", hex2);\nprintln("bin  = ", bin);\nprintln("bin2 = ", bin2);\nprintln("oct  = ", oct);\n\nreturn hex + bin + oct;` },
+            { id: 'int64_precision', name: '64 位整数精度', code: `// int/char 使用 64 位整数存储\nint exact = 9007199254740993;\nint largest = 9223372036854775807;\nint smallest = -largest - 1;\n\nprintln(\"exact    = \", exact);\nprintln(\"largest  = \", largest);\nprintln(\"smallest = \", smallest);\n\n// float 类型现在与 double 共用存储\nprintln(\"float 类型 = \", type(1.0f));\n\nreturn exact == 9007199254740993\n    && type(1) == \"int\"\n    && type(1.0f) == \"double\";` },
         ]
     },
     {
@@ -90,7 +91,7 @@ const EXAMPLE_GROUPS = [
             { id: 'random_function', name: 'Random 随机数', code: `println("随机数 [0,1): ", random());\nprintln("随机数 [0,10): ", random(10));\nprintln("随机数 [5,15): ", random(5, 15));\n\ndouble sum = 0;\nfor (int i = 0; i < 5; i++) {\n    sum = sum + random(1, 6);  // 模拟骰子\n}\nreturn sum;` },
             { id: 'to_string_number', name: '类型转换函数', code: `int n = 42;\ndouble f = 3.14;\nstring s = "123";\n\nstring str1 = to_string(n);\nstring str2 = to_string(f);\nprintln("字符串: ", str1, ", ", str2);\n\ndouble num = to_number(s);\nprintln("数字: ", num);\n\nreturn to_number("100") + 23;` },
             { id: 'size_function', name: 'Size 函数', code: `arr = {1, 2, 3, 4, 5};\nprintln("数组大小: ", size(arr));\n\nm["a"] = 1;\nm["b"] = 2;\nprintln("Map 大小: ", size(m));\n\nstring s = "Hello";\nprintln("字符串长度: ", size(s));\n\nreturn size(arr) + size(m);` },
-            { id: 'type_function', name: 'type() 类型检查', code: `int empty_value;\narr = {1, 2};\nm["x"] = 1;\n\nprintln("empty  : ", type(empty_value));\nprintln("number : ", type(1));\nprintln("string : ", type("abc"));\nprintln("array  : ", type(arr));\nprintln("map    : ", type(m));\n\nint all_ok = type(empty_value) == "empty"\n          && type(1) == "number"\n          && type("abc") == "string"\n          && type(arr) == "array"\n          && type(m) == "map";\nprintln("全部正确: ", all_ok ? "true" : "false");\nreturn all_ok;` },
+            { id: 'type_function', name: 'type() 类型检查', code: `int declared_int;\nauto pending_value;\narr = {1, 2};\nm[\"x\"] = 1;\n\nprintln(\"int    : \", type(declared_int));\nprintln(\"empty  : \", type(pending_value));\nprintln(\"literal: \", type(1));\nprintln(\"float  : \", type(1.0f));\nprintln(\"string : \", type(\"abc\"));\nprintln(\"array  : \", type(arr));\nprintln(\"map    : \", type(m));\n\nint all_ok = type(declared_int) == \"int\"\n          && type(pending_value) == \"empty\"\n          && type(1) == \"int\"\n          && type(1.0f) == \"double\"\n          && type(\"abc\") == \"string\"\n          && type(arr) == \"array\"\n          && type(m) == \"map\";\nprintln(\"全部正确: \", all_ok ? \"true\" : \"false\");\nreturn all_ok;` },
             { id: 'calc_pi_chudnovsky', name: '计算圆周率PI', code: `// 判断大数数组是否为 0
 int big_is_zero(a) {
     int len = size(a);

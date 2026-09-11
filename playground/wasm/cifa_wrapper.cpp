@@ -3,6 +3,7 @@
 #include "Cifa.h"
 #include <chrono>
 #include <cstdio>
+#include <format>
 #include <fstream>
 
 #ifdef _WIN32
@@ -136,7 +137,7 @@ std::vector<JsErrorMessage> convertErrors(const T& src) {
     return dst;
 }
 
-static std::string objectToString(const Object& obj);    // 前向声明（定义在下方）
+static std::string objectToString(const Cifa& cifa, const Object& obj);    // 前向声明（定义在下方）
 
 using Clock = std::chrono::steady_clock;
 
@@ -196,28 +197,30 @@ static ExecuteResult finishRun(Cifa& cifa, Ast& program, StdoutCapture& capture,
 
     // 成功执行
     result.success = true;
-    result.value = objectToString(obj);
+    result.value = objectToString(cifa, obj);
     return result;
 }
 
-// 将 Object 转换为字符串（处理所有类型）
-std::string objectToString(const Object& obj) {
+// 将 Object 转换为字符串（与新版引擎的数值存储和类型名称保持一致）
+std::string objectToString(const Cifa& cifa, const Object& obj) {
     if (!obj.hasValue() || obj.getSpecialType() == "NoValue") {
         return "(no return value)";
     }
+    if (obj.isType<bool>()) {
+        return obj.toBool() ? "true" : "false";
+    }
+    // int / char 在新版引擎中统一存储为 int64_t，不能先转 double，否则会丢失大整数精度
+    if (obj.isType<std::int64_t>()) {
+        return std::format("{}", obj.toInt64());
+    }
+    if (obj.isType<double>()) {
+        return std::format("{}", obj.toDouble());
+    }
     if (obj.isType<std::string>()) {
-        return obj.to<std::string>();
+        return obj.toString();
     }
-    if (obj.isNumber()) {
-        double val = obj.toDouble();
-        // 检查是否为整数
-        if (val == std::floor(val) && !std::isinf(val) && !std::isnan(val)) {
-            return std::to_string((long long)val);
-        }
-        return std::to_string(val);
-    }
-    // 其他类型，尝试获取类型名
-    return "<" + std::string(obj.getType().name()) + ">";
+    // array、map 及宿主注册类型使用引擎维护的类型名称
+    return "<" + cifa.registered_type_name(obj) + ">";
 }
 
 // 执行脚本（完整执行，用于运行）
