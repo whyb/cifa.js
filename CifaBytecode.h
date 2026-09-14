@@ -640,6 +640,7 @@ public:
     bool is_exit_requested() const;
     bool compile_script(std::string script);
     bool compile_file(const std::string& filename);
+    std::string get_cfg_json() const;
     Object run(const std::string& entry_label = {});
     Object run_script(std::string script);
     Object run_file(const std::string& filename);

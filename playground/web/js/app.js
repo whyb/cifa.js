@@ -2,9 +2,11 @@
  * Cifa Script Playground — VSCode-Inspired Multi-Tab Layout with File Explorer
  * 使用 IDBFS (IndexedDB) 实现持久化虚拟文件系统
  */
+import { CfgGraphViewer } from './cfg-viewer.js?v=20260914-cfg1';
+
 
 // JS/WASM 必须使用同一缓存版本，修改并重新构建 WASM 后应同步更新此值。
-const CIFA_ASSET_VERSION = '20260911-1';
+const CIFA_ASSET_VERSION = '20260914-cfg1';
 
 /* =========================================================
    SVG Icons (inline)
@@ -833,6 +835,7 @@ class CifaPlayground {
     constructor() {
         this.editor = null;
         this.cifaModule = null;
+        this.cfgViewer = null;
         this.isReady = false;
         this.lintTimeout = null;
         this.lintDelay = 500;
@@ -868,6 +871,7 @@ class CifaPlayground {
 
         await this.initCifa();
         await this.initEditor();
+        this.cfgViewer = new CfgGraphViewer();
         this.initUI();
         this.initSashes();
     }
@@ -900,6 +904,7 @@ class CifaPlayground {
             this.updateStatus(true);
             document.getElementById('loading-overlay').classList.add('hidden');
             document.getElementById('btn-run').disabled = false;
+            document.getElementById('btn-cfg').disabled = false;
         } catch (err) {
             console.error('Failed to initialize Cifa:', err);
             this.updateStatus(false, err && err.message ? err.message : 'unknown error');
@@ -1057,6 +1062,7 @@ class CifaPlayground {
     /* ---- Bind Toolbar ---- */
     bindToolbar() {
         document.getElementById('btn-run').onclick = () => this.run();
+        document.getElementById('btn-cfg').onclick = () => this.showCfg();
         document.getElementById('btn-clear').onclick = () => {
             const tab = this.getActiveTab();
             if (tab) {
@@ -1717,6 +1723,64 @@ class CifaPlayground {
         line.textContent = text;
         output.appendChild(line);
         output.scrollTop = output.scrollHeight;
+    }
+
+    /* =========================================================
+       Bytecode CFG (Multi-File Support)
+       ========================================================= */
+    async showCfg() {
+        if (!this.isReady || !this.cfgViewer) return;
+
+        const tab = this.getActiveTab();
+        if (!tab) return;
+
+        await this.syncTabToFile(tab);
+        const code = tab.code;
+        let rawCfg = '';
+        let fileName = tab.name || 'main.c';
+
+        try {
+            if (tab.fileId) {
+                const allFiles = this.fs.collectFiles();
+                const paths = this.toVectorString(allFiles.map((file) => file.path));
+                const contents = this.toVectorString(allFiles.map((file) => file.content));
+                const node = this.fs.findNode(tab.fileId);
+                fileName = node ? this.fs.getNodePath(node) : fileName;
+                rawCfg = this.cifaModule.getProgramCfgWithFiles(code, fileName, paths, contents);
+                this.disposeVectorString(paths, contents);
+            } else {
+                rawCfg = this.cifaModule.getProgramCfg(code);
+            }
+        } catch (error) {
+            const message = '控制流图生成失败: ' + (error && error.message ? error.message : String(error));
+            const data = { success: false, translationError: message, errors: [], functions: [] };
+            this.updateProblems([{ filename: fileName, line: 1, col: 1, message, source: '' }]);
+            this.selectBottomTab('problems');
+            this.cfgViewer.show(data, { fileName });
+            return;
+        }
+
+        let data;
+        try {
+            data = JSON.parse(rawCfg);
+        } catch (error) {
+            const message = '控制流图数据解析失败: ' + (error && error.message ? error.message : String(error));
+            data = { success: false, translationError: message, errors: [], functions: [] };
+        }
+
+        const errors = this.normalizeErrors(data.errors || []);
+        if (!data.success && errors.length === 0) {
+            errors.push({
+                filename: fileName,
+                line: 1,
+                col: 1,
+                message: data.translationError || '字节码编译失败',
+                source: ''
+            });
+        }
+        this.updateProblems(errors);
+        if (errors.length) this.selectBottomTab('problems');
+        this.cfgViewer.show(data, { fileName });
     }
 
     /* =========================================================

@@ -18,7 +18,7 @@ TARGET_JS = $(TARGET_DIR)/cifa.js
 TARGET_WASM = $(TARGET_DIR)/cifa.wasm
 
 # 源文件
-SOURCES = cifa_wrapper.cpp ../../Cifa.cpp ../../CifaBytecode.cpp
+SOURCES = cifa_wrapper.cpp cifa_cfg.cpp ../../Cifa.cpp ../../CifaBytecode.cpp
 
 .PHONY: all clean
 

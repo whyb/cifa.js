@@ -56,6 +56,15 @@
             <button class="toolbar-btn" id="btn-run" disabled>
                 <span>▶</span><span>运行</span>
             </button>
+            <button class="toolbar-btn secondary" id="btn-cfg" disabled title="显示字节码程序控制流图">
+                <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" aria-hidden="true">
+                    <rect x="1.5" y="1.5" width="5" height="4" rx="1"></rect>
+                    <rect x="9.5" y="10.5" width="5" height="4" rx="1"></rect>
+                    <rect x="1.5" y="10.5" width="5" height="4" rx="1"></rect>
+                    <path d="M6.5 3.5h3M4 5.5v5M11.5 5.5v5M6.5 12.5h3"></path>
+                </svg>
+                <span>程序控制流图</span>
+            </button>
             <button class="toolbar-btn secondary" id="btn-clear">
                 <span>清除</span>
             </button>
@@ -116,6 +125,76 @@
                     </div>
                 </div>
             </div>
+        </div>
+    </div>
+</div>
+
+<!-- ============ Bytecode CFG Window ============ -->
+<div class="cfg-overlay hidden" id="cfg-overlay">
+    <div class="cfg-dialog" id="cfg-dialog" role="dialog" aria-modal="true" aria-labelledby="cfg-window-title">
+        <div class="cfg-window-titlebar">
+            <div class="cfg-window-title">
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.25" aria-hidden="true">
+                    <rect x="1.5" y="1.5" width="5" height="4" rx="1"></rect>
+                    <rect x="9.5" y="10.5" width="5" height="4" rx="1"></rect>
+                    <rect x="1.5" y="10.5" width="5" height="4" rx="1"></rect>
+                    <path d="M6.5 3.5h3M4 5.5v5M11.5 5.5v5M6.5 12.5h3"></path>
+                </svg>
+                <span id="cfg-window-title">程序控制流图</span>
+                <span class="cfg-window-badge">Bytecode CFG</span>
+            </div>
+            <div class="cfg-window-actions">
+                <button type="button" class="cfg-window-action" id="cfg-maximize" title="最大化/还原">□</button>
+                <button type="button" class="cfg-window-action close" id="cfg-close" title="关闭">✕</button>
+            </div>
+        </div>
+
+        <div class="cfg-window-body">
+            <aside class="cfg-sidebar">
+                <div class="cfg-pane-heading">
+                    <span>函数</span>
+                    <span class="cfg-count" id="cfg-function-count">0</span>
+                </div>
+                <div class="cfg-function-list" id="cfg-function-list"></div>
+                <div class="cfg-sidebar-section">
+                    <div class="cfg-pane-heading"><span>统计</span></div>
+                    <div class="cfg-stats" id="cfg-stats"></div>
+                </div>
+                <div class="cfg-sidebar-section cfg-legend">
+                    <div class="cfg-pane-heading"><span>图例</span></div>
+                    <div class="cfg-legend-row"><span class="cfg-legend-line fallthrough"></span>顺序流</div>
+                    <div class="cfg-legend-row"><span class="cfg-legend-line true"></span>条件为真</div>
+                    <div class="cfg-legend-row"><span class="cfg-legend-line false"></span>条件为假</div>
+                    <div class="cfg-legend-row"><span class="cfg-legend-line call"></span>函数调用</div>
+                    <div class="cfg-legend-row"><span class="cfg-legend-line back"></span>循环回边</div>
+                </div>
+            </aside>
+
+            <section class="cfg-graph-pane">
+                <div class="cfg-graph-toolbar">
+                    <button type="button" class="cfg-tool-btn" id="cfg-fit" title="适应窗口">适应</button>
+                    <button type="button" class="cfg-tool-btn compact" id="cfg-zoom-out" title="缩小">−</button>
+                    <span class="cfg-zoom-value" id="cfg-zoom-value">100%</span>
+                    <button type="button" class="cfg-tool-btn compact" id="cfg-zoom-in" title="放大">+</button>
+                    <span class="cfg-toolbar-divider"></span>
+                    <label class="cfg-checkbox"><input type="checkbox" id="cfg-call-edges" checked><span>调用线</span></label>
+                    <span class="cfg-toolbar-spacer"></span>
+                    <span class="cfg-current-function" id="cfg-current-function"></span>
+                </div>
+                <div class="cfg-canvas-wrap" id="cfg-canvas-wrap">
+                    <canvas id="cfg-canvas"></canvas>
+                    <div class="cfg-canvas-hint">滚轮缩放 · 拖拽画布平移 · 拖拽节点调整位置 · 单击节点查看详情</div>
+                </div>
+            </section>
+
+            <aside class="cfg-inspector" id="cfg-inspector">
+                <div class="cfg-inspector-empty">选择节点查看详细信息</div>
+            </aside>
+        </div>
+
+        <div class="cfg-window-statusbar">
+            <span id="cfg-node-summary">节点 0 · 边 0</span>
+            <span id="cfg-selection-summary"></span>
         </div>
     </div>
 </div>

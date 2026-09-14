@@ -401,6 +401,27 @@ std::vector<JsErrorMessage> lintWithFiles(const std::string& code, const std::st
     return errors;
 }
 
+// 编译为字节码并导出完整 CFG；不执行脚本，不产生运行时副作用。
+std::string getProgramCfg(const std::string& code) {
+    CifaBytecode cifa;
+    cifa.set_output_error(false);
+    cifa.compile_script(code);
+    return cifa.get_cfg_json();
+}
+
+// 多文件版本：先写入 VFS，再编译入口文件并导出 CFG。
+std::string getProgramCfgWithFiles(const std::string& code, const std::string& filename,
+    const std::vector<std::string>& paths, const std::vector<std::string>& contents) {
+    writeToVFS(paths, contents);
+    writeFileToVFS(filename, code);
+
+    CifaBytecode cifa;
+    cifa.set_output_error(false);
+    cifa.set_include_dirs({"/workspace"});
+    cifa.compile_file("/workspace/" + filename);
+    return cifa.get_cfg_json();
+}
+
 EMSCRIPTEN_BINDINGS(cifa_module) {
     // 注册错误信息结构体
     value_object<JsErrorMessage>("JsErrorMessage")
@@ -431,4 +452,6 @@ EMSCRIPTEN_BINDINGS(cifa_module) {
     function("getBuiltinFunctions", &getBuiltinFunctions);
     function("executeWithFiles", &executeWithFiles);
     function("lintWithFiles", &lintWithFiles);
+    function("getProgramCfg", &getProgramCfg);
+    function("getProgramCfgWithFiles", &getProgramCfgWithFiles);
 }

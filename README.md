@@ -25,6 +25,7 @@ Cifa 脚本引擎的 Web 在线解释器，网站地址是： [https://whyb.gith
   - **多文件 #include**: 以当前编辑文件为入口执行/检查，入口文件所在目录自动加入 #include 搜索路径，子目录之间的相对引用也能正确解析。
   - **Web Worker 隔离执行**: 脚本运行于后台独立线程，即便代码出现逻辑瑕疵也不会阻塞 UI 响应。
   - **VS 风格错误列表**: 底部集成专业错误汇总看板，双击错误项即可自动跳转定位至源码行。
+  - **字节码程序控制流图**: 在运行按钮旁打开 VS Code 风格子窗口，查看完整字节码 CFG，支持缩放、平移、节点拖拽、函数切换和指令详情。
   - **运行安全保护**: 内置循环计数与递归深度限制，有效预防死循环导致的系统挂起。
 
 关于Cifa脚本语法的更多信息参见： [cifa仓库](https://github.com/scarsty/cifa)
@@ -38,6 +39,7 @@ Cifa 脚本引擎的 Web 在线解释器，网站地址是： [https://whyb.gith
   - `Object run(entry_label = "")`：执行已编译的字节码；可指定顶层标签作为入口。
   - `run_script` / `run_file` 现在是 `compile_*` + `run` 的组合调用。
 - **Lint 变纯静态检查**：`lint` / `lintWithFiles` 改用 `compile_script` / `compile_file`，只报告语法与静态错误，不再真正执行脚本。
+- **CFG 导出**：`getProgramCfg` / `getProgramCfgWithFiles` 返回由真实字节码生成的基本块、指令和标准控制流边，不执行脚本。
 - **多文件执行**：`executeWithFiles` / `lintWithFiles` 先把编辑器最新内容写入 VFS 的 /workspace 并覆盖入口文件，再以入口文件路径调用 `compile_file`/`run`，入口文件所在目录自动参与 #include 搜索。
 - **错误定位增强**：错误信息携带文件名（如 /workspace/sub/main.c）与出错行源码文本，Problems 面板会显示源码行，点击错误项可跨文件跳转到对应标签页。
 - **脚本语言新特性**：
