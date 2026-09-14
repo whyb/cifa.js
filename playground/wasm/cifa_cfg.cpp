@@ -45,6 +45,135 @@ std::string jsonString(std::string_view value)
 }
 }
 
+std::string CifaBytecode::get_profile_json() const
+{
+    std::string output;
+    output.reserve(32768);
+    output += "{\"version\":1,\"enabled\":";
+    output += profile_state.enabled ? "true" : "false";
+    output += ",\"truncated\":";
+    output += profile_state.truncated ? "true" : "false";
+    output += ",\"instructionLimit\":";
+    output += std::to_string(profile_state.instruction_limit);
+    output += ",\"instructionCount\":";
+    output += std::to_string(profile_state.instruction_count);
+    output += ",\"totalNs\":";
+    output += std::to_string(profile_state.total_ns);
+
+    auto sortedKeys = [](const auto& values)
+    {
+        std::vector<std::string> keys;
+        keys.reserve(values.size());
+        for (const auto& [key, value] : values) keys.push_back(key);
+        std::sort(keys.begin(), keys.end());
+        return keys;
+    };
+
+    output += ",\"instructions\":[";
+    {
+        const auto keys = sortedKeys(profile_state.instructions);
+        for (size_t index = 0; index < keys.size(); ++index)
+        {
+            if (index != 0) output += ",";
+            const auto& key = keys[index];
+            const auto& metric = profile_state.instructions.at(key);
+            const size_t separator = key.rfind('#');
+            const std::string function = separator == std::string::npos ? key : key.substr(0, separator);
+            const std::string pc = separator == std::string::npos ? "0" : key.substr(separator + 1);
+            output += "{\"key\":";
+            output += jsonString(key);
+            output += ",\"function\":";
+            output += jsonString(function);
+            output += ",\"pc\":";
+            output += pc;
+            output += ",\"count\":";
+            output += std::to_string(metric.count);
+            output += ",\"timeNs\":";
+            output += std::to_string(metric.time_ns);
+            output += "}";
+        }
+    }
+    output += "],\"functions\":[";
+    {
+        const auto keys = sortedKeys(profile_state.functions);
+        for (size_t index = 0; index < keys.size(); ++index)
+        {
+            if (index != 0) output += ",";
+            const auto& key = keys[index];
+            const auto& metric = profile_state.functions.at(key);
+            output += "{\"id\":";
+            output += jsonString(key);
+            output += ",\"calls\":";
+            output += std::to_string(metric.calls);
+            output += ",\"instructions\":";
+            output += std::to_string(metric.instructions);
+            output += ",\"selfNs\":";
+            output += std::to_string(metric.self_ns);
+            output += ",\"totalNs\":";
+            output += std::to_string(metric.total_ns);
+            output += "}";
+        }
+    }
+    output += "],\"edges\":[";
+    {
+        const auto keys = sortedKeys(profile_state.edges);
+        for (size_t index = 0; index < keys.size(); ++index)
+        {
+            if (index != 0) output += ",";
+            const auto& key = keys[index];
+            const auto& metric = profile_state.edges.at(key);
+            const size_t separator = key.rfind('#');
+            const size_t arrow = key.find('>', separator == std::string::npos ? 0 : separator + 1);
+            const std::string function = separator == std::string::npos ? key : key.substr(0, separator);
+            const std::string fromPc = separator == std::string::npos || arrow == std::string::npos
+                ? "0" : key.substr(separator + 1, arrow - separator - 1);
+            const std::string toPc = arrow == std::string::npos ? "0" : key.substr(arrow + 1);
+            output += "{\"key\":";
+            output += jsonString(key);
+            output += ",\"function\":";
+            output += jsonString(function);
+            output += ",\"fromPc\":";
+            output += fromPc;
+            output += ",\"toPc\":";
+            output += toPc;
+            output += ",\"count\":";
+            output += std::to_string(metric.count);
+            output += ",\"timeNs\":";
+            output += std::to_string(metric.time_ns);
+            output += "}";
+        }
+    }
+    output += "],\"flames\":[";
+    {
+        const auto keys = sortedKeys(profile_state.flames);
+        for (size_t index = 0; index < keys.size(); ++index)
+        {
+            if (index != 0) output += ",";
+            const auto& key = keys[index];
+            const auto& metric = profile_state.flames.at(key);
+            output += "{\"path\":[";
+            size_t start = 0;
+            size_t pathIndex = 0;
+            while (start <= key.size())
+            {
+                const size_t separator = key.find('\x1f', start);
+                if (pathIndex != 0) output += ",";
+                output += jsonString(key.substr(start, separator == std::string::npos ? std::string::npos : separator - start));
+                ++pathIndex;
+                if (separator == std::string::npos) break;
+                start = separator + 1;
+            }
+            output += "],\"selfNs\":";
+            output += std::to_string(metric.self_ns);
+            output += ",\"totalNs\":";
+            output += std::to_string(metric.total_ns);
+            output += "}";
+        }
+    }
+    output += "]}";
+    return output;
+}
+
 std::string CifaBytecode::get_cfg_json() const
 {
     std::string output;

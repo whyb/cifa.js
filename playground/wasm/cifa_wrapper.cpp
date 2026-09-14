@@ -121,6 +121,7 @@ struct ExecuteResult {
     double compileMs;
     double runMs;
     double totalMs;
+    std::string profile;
 };
 
 // 将 Cifa 错误信息转换为 JsErrorMessage（并携带出错行源码文本）
@@ -166,16 +167,18 @@ static ExecuteResult makeCompileErrorResult(CifaBytecode& cifa, StdoutCapture& c
 }
 
 // 执行已编译的字节码并组装完整结果（execute / executeWithFiles 共用）
-static ExecuteResult finishRun(CifaBytecode& cifa, StdoutCapture& capture, double compileMs) {
+static ExecuteResult finishRun(CifaBytecode& cifa, StdoutCapture& capture, double compileMs, bool enableProfile = false) {
     ExecuteResult result;
     result.success = false;
     result.compileMs = compileMs;
 
     // 执行编译后的字节码；空入口标签表示从第一个顶层节点开始
+    if (enableProfile) cifa.set_profiling_enabled(true);
     const auto runStart = Clock::now();
     Object obj = cifa.run();
     result.runMs = elapsedMs(runStart);
     result.totalMs = result.compileMs + result.runMs;
+    if (enableProfile) result.profile = cifa.get_profile_json();
 
     result.output = capture.finish();
     // 同时保留浏览器控制台输出（console.log）
@@ -252,7 +255,20 @@ ExecuteResult execute(const std::string& code) {
     }
 
     // 编译成功后再执行
-    return finishRun(cifa, capture, compileMs);
+    return finishRun(cifa, capture, compileMs, false);
+}
+
+// 执行脚本并返回运行时性能数据
+ExecuteResult executeWithProfile(const std::string& code) {
+    StdoutCapture capture;
+    CifaBytecode cifa;
+    cifa.set_output_error(false);
+
+    const auto compileStart = Clock::now();
+    const bool compiled = cifa.compile_script(code);
+    const double compileMs = elapsedMs(compileStart);
+    if (!compiled) return makeCompileErrorResult(cifa, capture, compileMs);
+    return finishRun(cifa, capture, compileMs, true);
 }
 
 // 仅语法检查（用于实时 linting）
@@ -378,7 +394,25 @@ ExecuteResult executeWithFiles(const std::string& code, const std::string& filen
     if (!compiled) {
         return makeCompileErrorResult(cifa, capture, compileMs);
     }
-    return finishRun(cifa, capture, compileMs);
+    return finishRun(cifa, capture, compileMs, false);
+}
+
+// 多文件执行并返回运行时性能数据
+ExecuteResult executeWithFilesWithProfile(const std::string& code, const std::string& filename,
+    const std::vector<std::string>& paths, const std::vector<std::string>& contents) {
+    writeToVFS(paths, contents);
+    writeFileToVFS(filename, code);
+
+    StdoutCapture capture;
+    CifaBytecode cifa;
+    cifa.set_output_error(false);
+    cifa.set_include_dirs({"/workspace"});
+
+    const auto compileStart = Clock::now();
+    const bool compiled = cifa.compile_file("/workspace/" + filename);
+    const double compileMs = elapsedMs(compileStart);
+    if (!compiled) return makeCompileErrorResult(cifa, capture, compileMs);
+    return finishRun(cifa, capture, compileMs, true);
 }
 
 // 将虚拟文件写入 Emscripten VFS，然后进行语法检查（支持 #include）
@@ -440,7 +474,8 @@ EMSCRIPTEN_BINDINGS(cifa_module) {
         .field("output", &ExecuteResult::output)
         .field("compileMs", &ExecuteResult::compileMs)
         .field("runMs", &ExecuteResult::runMs)
-        .field("totalMs", &ExecuteResult::totalMs);
+        .field("totalMs", &ExecuteResult::totalMs)
+        .field("profile", &ExecuteResult::profile);
 
     // 注册向量类型
     register_vector<JsErrorMessage>("VectorJsErrorMessage");
@@ -448,9 +483,11 @@ EMSCRIPTEN_BINDINGS(cifa_module) {
 
     // 导出函数
     function("execute", &execute);
+    function("executeWithProfile", &executeWithProfile);
     function("lint", &lint);
     function("getBuiltinFunctions", &getBuiltinFunctions);
     function("executeWithFiles", &executeWithFiles);
+    function("executeWithFilesWithProfile", &executeWithFilesWithProfile);
     function("lintWithFiles", &lintWithFiles);
     function("getProgramCfg", &getProgramCfg);
     function("getProgramCfgWithFiles", &getProgramCfgWithFiles);

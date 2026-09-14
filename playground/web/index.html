@@ -172,6 +172,13 @@
 
             <section class="cfg-graph-pane">
                 <div class="cfg-graph-toolbar">
+                    <div class="cfg-view-tabs" role="tablist" aria-label="CFG 视图">
+                        <button type="button" class="cfg-view-tab active" id="cfg-view-cfg" data-view="cfg">控制流图</button>
+                        <button type="button" class="cfg-view-tab" id="cfg-view-flame" data-view="flame">火焰图</button>
+                    </div>
+                    <span class="cfg-toolbar-divider"></span>
+                    <button type="button" class="cfg-tool-btn profile" id="cfg-profile" title="执行当前脚本并采集运行时性能数据">运行采样</button>
+                    <span class="cfg-toolbar-divider"></span>
                     <button type="button" class="cfg-tool-btn" id="cfg-fit" title="适应窗口">适应</button>
                     <button type="button" class="cfg-tool-btn compact" id="cfg-zoom-out" title="缩小">−</button>
                     <span class="cfg-zoom-value" id="cfg-zoom-value">100%</span>
@@ -194,6 +201,7 @@
 
         <div class="cfg-window-statusbar">
             <span id="cfg-node-summary">节点 0 · 边 0</span>
+            <span id="cfg-profile-summary">尚未进行性能采样</span>
             <span id="cfg-selection-summary"></span>
         </div>
     </div>

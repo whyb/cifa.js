@@ -2,11 +2,11 @@
  * Cifa Script Playground — VSCode-Inspired Multi-Tab Layout with File Explorer
  * 使用 IDBFS (IndexedDB) 实现持久化虚拟文件系统
  */
-import { CfgGraphViewer } from './cfg-viewer.js?v=20260914-cfg1';
+import { CfgGraphViewer } from './cfg-viewer.js?v=20260914-cfg5';
 
 
 // JS/WASM 必须使用同一缓存版本，修改并重新构建 WASM 后应同步更新此值。
-const CIFA_ASSET_VERSION = '20260914-cfg1';
+const CIFA_ASSET_VERSION = '20260914-cfg5';
 
 /* =========================================================
    SVG Icons (inline)
@@ -1780,7 +1780,52 @@ class CifaPlayground {
         }
         this.updateProblems(errors);
         if (errors.length) this.selectBottomTab('problems');
-        this.cfgViewer.show(data, { fileName });
+        this.cfgViewer.show(data, {
+            fileName,
+            onProfile: () => this.runCfgProfile(tab),
+            onOutput: (text, type) => this.appendOutput(type || 'info', text)
+        });
+    }
+
+    async runCfgProfile(tab) {
+        if (!this.isReady || !tab) return null;
+        await this.syncTabToFile(tab);
+        const code = tab.code;
+        let result;
+
+        try {
+            if (tab.fileId) {
+                const allFiles = this.fs.collectFiles();
+                const paths = this.toVectorString(allFiles.map((file) => file.path));
+                const contents = this.toVectorString(allFiles.map((file) => file.content));
+                const node = this.fs.findNode(tab.fileId);
+                const filename = node ? this.fs.getNodePath(node) : (tab.name || 'main.c');
+                result = this.cifaModule.executeWithFilesWithProfile(code, filename, paths, contents);
+                this.disposeVectorString(paths, contents);
+            } else {
+                result = this.cifaModule.executeWithProfile(code);
+            }
+        } catch (error) {
+            result = { success: false, runtimeError: '性能采样执行失败: ' + (error && error.message ? error.message : String(error)), errors: [], profile: '' };
+        }
+
+        const rawErrors = result && result.errors ? result.errors : [];
+        const errors = this.normalizeErrors(rawErrors);
+        this.disposeEmbind(rawErrors);
+        if (errors.length) {
+            this.updateProblems(errors);
+            this.selectBottomTab('problems');
+        }
+
+        let profile = null;
+        if (result && result.profile) {
+            try {
+                profile = JSON.parse(result.profile);
+            } catch (error) {
+                this.appendOutput('error', '性能数据解析失败: ' + (error && error.message ? error.message : String(error)));
+            }
+        }
+        return { ...result, profile };
     }
 
     /* =========================================================

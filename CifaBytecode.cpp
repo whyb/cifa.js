@@ -6,9 +6,25 @@
 #include <cmath>
 #include <iostream>
 #include <limits>
+#ifdef __EMSCRIPTEN__
+#include <emscripten.h>
+#endif
 
 namespace cifa
 {
+namespace
+{
+std::uint64_t profile_now_ns()
+{
+#ifdef __EMSCRIPTEN__
+    return static_cast<std::uint64_t>(emscripten_get_now() * 1000000.0);
+#else
+    return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count());
+#endif
+}
+}
+
 #ifdef CIFA_VALUE_PROFILE
 struct ValueProfile
 {
@@ -3045,6 +3061,107 @@ CifaBytecode::CifaBytecode() : session(std::make_unique<Session>(*this))
 
 CifaBytecode::~CifaBytecode() = default;
 
+CifaBytecode::ProfileInstructionGuard::ProfileInstructionGuard(CifaBytecode& owner, std::string function_id,
+    std::vector<std::string> stack_snapshot, size_t pc, size_t previous_pc)
+    : owner(owner), function_id(std::move(function_id)), stack_snapshot(std::move(stack_snapshot)),
+      pc(pc), previous_pc(previous_pc), start_ns(profile_now_ns())
+{
+}
+
+CifaBytecode::ProfileInstructionGuard::~ProfileInstructionGuard()
+{
+    const std::uint64_t now_ns = profile_now_ns();
+    owner.record_profile_instruction(function_id, pc, previous_pc, stack_snapshot,
+        now_ns >= start_ns ? now_ns - start_ns : 0);
+}
+
+void CifaBytecode::set_profiling_enabled(bool enabled)
+{
+    profile_state = {};
+    profile_state.enabled = enabled;
+}
+
+bool CifaBytecode::is_profiling_enabled() const
+{
+    return profile_state.enabled;
+}
+
+void CifaBytecode::reset_profile()
+{
+    const bool enabled = profile_state.enabled;
+    profile_state = {};
+    profile_state.enabled = enabled;
+}
+
+void CifaBytecode::profile_enter_function(const std::string& id)
+{
+    if (!profile_state.enabled || id.empty()) return;
+    ++profile_state.functions[id].calls;
+    profile_state.stack.push_back(id);
+    profile_state.last_pc.push_back(std::numeric_limits<size_t>::max());
+}
+
+void CifaBytecode::profile_leave_function()
+{
+    if (!profile_state.enabled || profile_state.stack.size() <= 1) return;
+    profile_state.stack.pop_back();
+    profile_state.last_pc.pop_back();
+}
+
+void CifaBytecode::record_profile_instruction(const std::string& function_id, size_t pc,
+    size_t previous_pc, const std::vector<std::string>& stack, std::uint64_t duration_ns)
+{
+    if (!profile_state.enabled || function_id.empty()) return;
+
+    constexpr char separator = '\x1f';
+    const std::string instruction_key = function_id + "#" + std::to_string(pc);
+    auto& instruction = profile_state.instructions[instruction_key];
+    ++instruction.count;
+    instruction.time_ns += duration_ns;
+    profile_state.total_ns += duration_ns;
+
+    if (previous_pc != std::numeric_limits<size_t>::max())
+    {
+        const std::string edge_key = function_id + "#" + std::to_string(previous_pc)
+            + ">" + std::to_string(pc);
+        auto& edge = profile_state.edges[edge_key];
+        ++edge.count;
+        edge.time_ns += duration_ns;
+    }
+
+    for (size_t index = 0; index < stack.size(); ++index)
+    {
+        auto& function = profile_state.functions[stack[index]];
+        ++function.instructions;
+        function.total_ns += duration_ns;
+
+        std::string path;
+        path.reserve(stack[index].size() * (index + 1) + index);
+        for (size_t path_index = 0; path_index <= index; ++path_index)
+        {
+            if (path_index != 0) path.push_back(separator);
+            path += stack[path_index];
+        }
+        auto& flame = profile_state.flames[path];
+        flame.total_ns += duration_ns;
+        if (index + 1 == stack.size()) flame.self_ns += duration_ns;
+    }
+
+    if (!stack.empty()) profile_state.functions[stack.back()].self_ns += duration_ns;
+
+    ++profile_state.instruction_count;
+    if (profile_state.instruction_count >= profile_state.instruction_limit)
+    {
+        profile_state.truncated = true;
+        profile_state.enabled = false;
+    }
+
+    if (!profile_state.stack.empty() && profile_state.stack.size() == stack.size()
+        && profile_state.stack.back() == function_id)
+        profile_state.last_pc.back() = pc;
+}
+
+
 void CifaBytecode::translate(Cifa& compiler, size_t script_function_version)
 {
     module_data->int_type_id = intern_name("int");
@@ -3605,6 +3722,7 @@ bool CifaBytecode::execute_instructions(Machine& machine, const Module& module, 
         }
         auto saved = std::move(frames.back());
         frames.pop_back();
+        machine.host.profile_leave_function();
         return_states.pop_back();
         local_windows.pop_back();
         active_locals = saved.locals;
@@ -3638,6 +3756,15 @@ bool CifaBytecode::execute_instructions(Machine& machine, const Module& module, 
             continue;
         }
         const auto& instruction = active_instructions->code[pc++];
+        const size_t profile_pc = pc - 1;
+        std::optional<ProfileInstructionGuard> profile_guard;
+        if (machine.host.profile_state.enabled && !machine.host.profile_state.stack.empty())
+        {
+            const size_t previous_pc = machine.host.profile_state.last_pc.empty()
+                ? std::numeric_limits<size_t>::max() : machine.host.profile_state.last_pc.back();
+            profile_guard.emplace(machine.host, machine.host.profile_state.stack.back(),
+                machine.host.profile_state.stack, profile_pc, previous_pc);
+        }
     #ifdef CIFA_VM_PROFILE
         ++profile.opcodes[static_cast<size_t>(instruction.opcode)];
         profile.instruction_fields[0] += instruction.source.id != 0;
@@ -4241,6 +4368,8 @@ bool CifaBytecode::execute_instructions(Machine& machine, const Module& module, 
                     std::move(ranges), std::move(method_arguments), method_argument_top, active_owner, std::move(active_module), std::move(active_aliases),
                     caller_base, caller_size, caller_top, std::move(pending_calls)});
                 active_function = cached;
+                if (machine.host.profile_state.enabled)
+                    machine.host.profile_enter_function("fn:" + cached->name + "@" + std::to_string(cached->parameters.size()));
                 active_call = &call_source;
                 active_node = &function_module->source(cached->body_source);
                 active_owner = function_module.get();
@@ -6702,6 +6831,22 @@ Object CifaBytecode::Session::run(CifaBytecode& code, const std::string& entry_l
 {
     code.runtime_error.clear();
     auto& vm = *machine;
+    const size_t profile_base_size = code.profile_state.stack.size();
+    if (code.profile_state.enabled)
+    {
+        const std::string profile_id = profile_base_size == 0 ? "root" : "nested";
+        code.profile_enter_function(profile_id);
+    }
+    struct RestoreProfileState
+    {
+        CifaBytecode& code;
+        size_t base_size = 0;
+        ~RestoreProfileState()
+        {
+            code.profile_state.stack.resize(base_size);
+            code.profile_state.last_pc.resize(base_size);
+        }
+    } restore_profile_state{code, profile_base_size};
     const bool nested = active;
     auto saved_scopes = std::move(vm.scopes);
     auto saved_returns = std::move(vm.returns);

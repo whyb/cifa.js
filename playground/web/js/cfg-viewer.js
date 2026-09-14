@@ -14,6 +14,9 @@ export class CfgGraphViewer {
         this.nodeSummary = document.getElementById('cfg-node-summary');
         this.selectionSummary = document.getElementById('cfg-selection-summary');
         this.windowTitle = document.getElementById('cfg-window-title');
+        this.profileButton = document.getElementById('cfg-profile');
+        this.profileSummary = document.getElementById('cfg-profile-summary');
+        this.viewTabs = Array.from(document.querySelectorAll('.cfg-view-tab'));
 
         this.payload = null;
         this.meta = {};
@@ -31,6 +34,15 @@ export class CfgGraphViewer {
         this.dpr = 1;
         this.worldBounds = { minX: 0, minY: 0, maxX: 1, maxY: 1 };
         this.drag = null;
+        this.profile = null;
+        this.instructionProfile = new Map();
+        this.edgeProfile = new Map();
+        this.functionProfile = new Map();
+        this.flameNodes = [];
+        this.flameNodeMap = new Map();
+        this.viewMode = 'cfg';
+        this.maxBlockTimeNs = 0;
+        this.maxEdgeTimeNs = 0;
         this._bindEvents();
     }
 
@@ -39,7 +51,14 @@ export class CfgGraphViewer {
         this.meta = meta || {};
         this.functions = Array.isArray(this.payload.functions) ? this.payload.functions : [];
         this.functionMap = new Map(this.functions.map((fn) => [fn.id, fn]));
+        this.profile = null;
+        this.viewMode = 'cfg';
+        this._resetProfileData();
         this.windowTitle.textContent = '程序控制流图' + (this.meta.fileName ? ' — ' + this.meta.fileName : '');
+        this.profileButton.disabled = !this.meta.onProfile;
+        this.profileButton.textContent = this.meta.onProfile ? '运行采样' : '未启用采样';
+        this.profileSummary.textContent = '尚未进行性能采样';
+        this._updateViewTabs();
 
         this.overlay.classList.remove('hidden');
         document.body.classList.add('cfg-open');
@@ -75,6 +94,10 @@ export class CfgGraphViewer {
     selectFunction(id, shouldFit = false) {
         const fn = this.functionMap.get(id);
         if (!fn) return;
+        if (this.viewMode !== 'cfg') {
+            this.viewMode = 'cfg';
+            this._updateViewTabs();
+        }
         this.activeFunctionId = id;
         this.selectionId = '';
         this._renderFunctionList();
@@ -113,6 +136,157 @@ export class CfgGraphViewer {
         this._zoomAt(this.viewWidth / 2, this.viewHeight / 2, this.zoom * factor);
     }
 
+    _resetProfileData() {
+        this.instructionProfile = new Map();
+        this.edgeProfile = new Map();
+        this.functionProfile = new Map();
+        this.flameNodes = [];
+        this.flameNodeMap = new Map();
+        this.maxBlockTimeNs = 0;
+        this.maxEdgeTimeNs = 0;
+    }
+
+    _updateViewTabs() {
+        for (const tab of this.viewTabs) {
+            tab.classList.toggle('active', tab.dataset.view === this.viewMode);
+        }
+    }
+
+    setViewMode(mode) {
+        if (mode !== 'cfg' && mode !== 'flame') return;
+        this.viewMode = mode;
+        this.selectionId = '';
+        this._updateViewTabs();
+        this._renderInspector(null);
+        if (mode === 'flame') this._buildFlameGraph();
+        else {
+            const fn = this.functionMap.get(this.activeFunctionId);
+            if (fn) {
+                this._buildGraph(fn);
+                this._layoutGraph();
+            }
+        }
+        this._updateStats();
+        requestAnimationFrame(() => this.fit());
+    }
+
+    async _runProfile() {
+        if (!this.meta.onProfile || this.profileButton.disabled) return;
+        const originalText = this.profileButton.textContent;
+        this.profileButton.disabled = true;
+        this.profileButton.textContent = '采样中…';
+        try {
+            const result = await this.meta.onProfile();
+            if (result && result.profile) {
+                this.profile = typeof result.profile === 'string' ? JSON.parse(result.profile) : result.profile;
+                this._indexProfile();
+                this._renderFunctionList();
+                const fn = this.functionMap.get(this.activeFunctionId);
+                if (fn) {
+                    this._buildGraph(fn);
+                    this._layoutGraph();
+                    this._renderInspector(null);
+                }
+                if (this.viewMode === 'flame') this._buildFlameGraph();
+                this._updateStats();
+                requestAnimationFrame(() => this.fit());
+            }
+            if (result && result.output && this.meta.onOutput) this.meta.onOutput(result.output, 'info');
+            if (result && result.runtimeError && this.meta.onOutput) this.meta.onOutput(result.runtimeError, 'error');
+        } catch (error) {
+            if (this.meta.onOutput) this.meta.onOutput('性能采样失败: ' + (error && error.message ? error.message : String(error)), 'error');
+        } finally {
+            this.profileButton.disabled = false;
+            this.profileButton.textContent = originalText;
+        }
+    }
+
+    _indexProfile() {
+        this._resetProfileData();
+        if (!this.profile) return;
+        for (const metric of this.profile.instructions || []) {
+            this.instructionProfile.set(metric.key, metric);
+        }
+        for (const metric of this.profile.edges || []) {
+            this.edgeProfile.set(metric.key, metric);
+        }
+        for (const metric of this.profile.functions || []) {
+            this.functionProfile.set(metric.id, metric);
+        }
+    }
+
+    _formatTime(ns) {
+        const value = Number(ns) || 0;
+        if (value < 1000) return value.toFixed(0) + 'ns';
+        if (value < 1000000) return (value / 1000).toFixed(2) + 'µs';
+        if (value < 1000000000) return (value / 1000000).toFixed(2) + 'ms';
+        return (value / 1000000000).toFixed(2) + 's';
+    }
+
+    _profileForInstruction(functionId, pc) {
+        return this.instructionProfile.get(functionId + '#' + pc) || null;
+    }
+
+    _profileForEdge(functionId, edge) {
+        if (!edge) return null;
+        return this.edgeProfile.get(functionId + '#' + edge.fromPc + '>' + edge.toPc) || null;
+    }
+
+    _buildFlameGraph() {
+        this.flameNodes = [];
+        this.flameNodeMap = new Map();
+        if (!this.profile || !Array.isArray(this.profile.flames) || this.profile.flames.length === 0) {
+            this.worldBounds = { minX: 0, minY: 0, maxX: 1, maxY: 1 };
+            return;
+        }
+
+        const root = { id: '__flame_root__', name: 'root', children: new Map(), totalNs: this.profile.totalNs || 0, selfNs: 0, depth: 0 };
+        for (const item of this.profile.flames) {
+            const path = Array.isArray(item.path) ? item.path : [String(item.path || '')];
+            let current = root;
+            let pathId = '__flame_root__';
+            for (let index = 0; index < path.length; index++) {
+                const segment = path[index];
+                pathId += '/' + segment;
+                let child = current.children.get(segment);
+                if (!child) {
+                    child = { id: pathId, name: this._flameDisplayName(segment), pathName: segment, children: new Map(), totalNs: 0, selfNs: 0, depth: index + 1, isFlame: true };
+                    current.children.set(segment, child);
+                }
+                current = child;
+                current.totalNs = Math.max(current.totalNs, Number(item.totalNs) || 0);
+                current.selfNs = Math.max(current.selfNs, Number(item.selfNs) || 0);
+                current.totalNs = Math.max(current.totalNs, current.selfNs);
+            }
+        }
+
+        const rootTotal = Math.max(Number(this.profile.totalNs) || 0, 1);
+        root.totalNs = rootTotal;
+        const ordered = [];
+        const walk = (node, x, width, depth) => {
+            node.x = x;
+            node.y = depth * 25;
+            node.w = Math.max(0, width);
+            node.h = 20;
+            node.depth = depth;
+            if (node !== root) {
+                this.flameNodes.push(node);
+                this.flameNodeMap.set(node.id, node);
+            }
+            const children = Array.from(node.children.values()).sort((left, right) => left.name.localeCompare(right.name));
+            const childTotal = children.reduce((sum, child) => sum + Math.max(0, child.totalNs), 0);
+            let childX = x;
+            for (const child of children) {
+                const childWidth = childTotal > 0 ? width * (child.totalNs / childTotal) : 0;
+                walk(child, childX, childWidth, depth + 1);
+                childX += childWidth;
+            }
+        };
+        walk(root, 0, rootTotal, 0);
+        const maxDepth = this.flameNodes.reduce((value, node) => Math.max(value, node.depth), 0);
+        this.worldBounds = { minX: -20, minY: -20, maxX: rootTotal + 20, maxY: maxDepth * 25 + 20 };
+    }
+
     _bindEvents() {
         document.getElementById('cfg-close').addEventListener('click', () => this.hide());
         document.getElementById('cfg-maximize').addEventListener('click', () => {
@@ -122,6 +296,10 @@ export class CfgGraphViewer {
                 this.fit();
             });
         });
+        this.profileButton.addEventListener('click', () => this._runProfile());
+        for (const tab of this.viewTabs) {
+            tab.addEventListener('click', () => this.setViewMode(tab.dataset.view));
+        }
         document.getElementById('cfg-fit').addEventListener('click', () => this.fit());
         document.getElementById('cfg-zoom-in').addEventListener('click', () => this.zoomBy(1.2));
         document.getElementById('cfg-zoom-out').addEventListener('click', () => this.zoomBy(1 / 1.2));
@@ -190,11 +368,15 @@ export class CfgGraphViewer {
             button.dataset.functionId = fn.id;
             const parameters = fn.parameters && fn.parameters.length ? fn.parameters.join(', ') : 'void';
             const returnType = fn.returnType ? fn.returnType + ' ' : '';
+            const metric = this.functionProfile.get(fn.id);
+            const timing = metric
+                ? ' · ' + this._formatTime(metric.selfNs) + ' self'
+                : '';
             button.innerHTML =
                 '<div class="cfg-function-name"><span>' + this._escape(fn.name) + '</span>' +
                 (fn.root ? '<span class="cfg-function-root">ENTRY</span>' : '') + '</div>' +
                 '<div class="cfg-function-meta">' + returnType + '(' + this._escape(parameters) + ') · ' +
-                fn.blocks.length + ' blocks</div>';
+                fn.blocks.length + ' blocks' + timing + '</div>';
             this.functionList.appendChild(button);
         }
     }
@@ -214,12 +396,29 @@ export class CfgGraphViewer {
         const blocks = fn ? fn.blocks.filter((block) => !block.synthetic).length : 0;
         const instructions = fn ? fn.blocks.reduce((sum, block) => sum + block.instructions.length, 0) : 0;
         const edges = this.graph.edges.length;
-        this.stats.innerHTML =
+        const functionMetric = fn ? this.functionProfile.get(fn.id) : null;
+        let statsHtml =
             '<span>函数</span><span>' + this.functions.length + '</span>' +
             '<span>基本块</span><span>' + blocks + '</span>' +
             '<span>指令</span><span>' + instructions + '</span>' +
             '<span>控制边</span><span>' + edges + '</span>';
-        this.nodeSummary.textContent = '节点 ' + this.graph.nodes.length + ' · 边 ' + this.graph.edges.length;
+        if (functionMetric) {
+            statsHtml +=
+                '<span>自耗时</span><span>' + this._formatTime(functionMetric.selfNs) + '</span>' +
+                '<span>总耗时</span><span>' + this._formatTime(functionMetric.totalNs) + '</span>';
+        }
+        this.stats.innerHTML = statsHtml;
+        if (this.viewMode === 'flame') {
+            this.nodeSummary.textContent = '火焰图 ' + this.flameNodes.length + ' 个栈帧';
+        } else {
+            this.nodeSummary.textContent = '节点 ' + this.graph.nodes.length + ' · 边 ' + this.graph.edges.length;
+        }
+        if (this.profile) {
+            this.profileSummary.textContent = '采样 ' + String(this.profile.instructionCount || 0) + ' 条指令 · ' +
+                this._formatTime(this.profile.totalNs || 0) + (this.profile.truncated ? ' · 已截断' : '');
+        } else {
+            this.profileSummary.textContent = '尚未进行性能采样';
+        }
     }
 
     _buildGraph(fn) {
@@ -243,6 +442,7 @@ export class CfgGraphViewer {
             const node = {
                 id: block.id,
                 title,
+                baseTitle: title,
                 block,
                 instructions: block.instructions,
                 lines: displayLines,
@@ -325,6 +525,59 @@ export class CfgGraphViewer {
             data: fn,
             originalIndex
         };
+        this._attachProfileToGraph();
+    }
+
+    _attachProfileToGraph() {
+        this.maxBlockTimeNs = 0;
+        this.maxEdgeTimeNs = 0;
+        const functionId = this.activeFunctionId;
+        for (const node of this.graph.nodes) {
+            node.profile = null;
+            node.title = node.baseTitle;
+            if (!node.block || !node.block.instructions) continue;
+            const visible = node.block.instructions.slice(0, 14);
+            node.lines = visible.map((instruction) => {
+                const metric = this._profileForInstruction(functionId, instruction.pc);
+                const timing = metric
+                    ? ' · ' + this._formatTime(Number(metric.timeNs) || 0) + ' · ' + metric.count + '×'
+                    : '';
+                return instruction.pc + ': ' + instruction.text + timing;
+            });
+            if (node.block.instructions.length > visible.length) {
+                node.lines.push('+' + (node.block.instructions.length - visible.length) + ' 条指令…');
+            }
+            let selfNs = 0;
+            let count = 0;
+            const profileByInstruction = [];
+            for (const instruction of node.block.instructions) {
+                const metric = this._profileForInstruction(functionId, instruction.pc);
+                if (!metric) continue;
+                profileByInstruction.push({ pc: instruction.pc, metric });
+                selfNs += Number(metric.timeNs) || 0;
+                count += Number(metric.count) || 0;
+            }
+            if (selfNs || count) {
+                node.profile = { selfNs, totalNs: selfNs, count };
+                node.title = node.baseTitle + ' · ' + this._formatTime(selfNs);
+                this.maxBlockTimeNs = Math.max(this.maxBlockTimeNs, selfNs);
+            }
+        }
+        for (const edge of this.graph.edges) {
+            edge.profile = null;
+            if (edge.kind === 'call') {
+                const source = this.graph.nodeMap.get(edge.from);
+                if (source && source.block) {
+                    const instruction = source.block.instructions.find((item) => item.pc === edge.fromPc);
+                    const metric = instruction ? this._profileForInstruction(functionId, instruction.pc) : null;
+                    if (metric) edge.profile = metric;
+                }
+            } else {
+                const metric = this._profileForEdge(functionId, edge);
+                if (metric) edge.profile = metric;
+            }
+            if (edge.profile) this.maxEdgeTimeNs = Math.max(this.maxEdgeTimeNs, Number(edge.profile.timeNs) || 0);
+        }
     }
 
     _layoutGraph() {
@@ -459,6 +712,11 @@ export class CfgGraphViewer {
         ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
         ctx.clearRect(0, 0, this.viewWidth, this.viewHeight);
 
+        if (this.viewMode === 'flame') {
+            this._renderFlameGraph();
+            return;
+        }
+
         if (!this.graph.nodes.length) {
             ctx.save();
             ctx.fillStyle = '#9d9d9d';
@@ -502,6 +760,75 @@ export class CfgGraphViewer {
         this.zoomValue.textContent = Math.round(this.zoom * 100) + '%';
     }
 
+    _flameDisplayName(segment) {
+        if (segment === 'root') return '<main>';
+        if (segment === 'nested') return '<nested script>';
+        const fn = this.functionMap.get(segment);
+        return fn ? fn.name + '/' + fn.arity : segment;
+    }
+
+    _renderFlameGraph() {
+        const ctx = this.ctx;
+        if (!this.flameNodes.length) {
+            ctx.save();
+            ctx.fillStyle = '#9d9d9d';
+            ctx.font = '13px sans-serif';
+            ctx.textAlign = 'center';
+            ctx.fillText(this.profile ? '性能数据中没有可显示的调用栈样本' : '请先点击“运行采样”生成火焰图', this.viewWidth / 2, this.viewHeight / 2);
+            ctx.restore();
+            this.zoomValue.textContent = '100%';
+            return;
+        }
+
+        ctx.save();
+        ctx.translate(this.panX, this.panY);
+        ctx.scale(this.zoom, this.zoom);
+        const margin = 80 / this.zoom;
+        const visible = {
+            minX: (-this.panX / this.zoom) - margin,
+            maxX: (this.viewWidth - this.panX) / this.zoom + margin,
+            minY: (-this.panY / this.zoom) - margin,
+            maxY: (this.viewHeight - this.panY) / this.zoom + margin
+        };
+        for (const node of this.flameNodes) {
+            if (node.x + node.w < visible.minX || node.x > visible.maxX || node.y + node.h < visible.minY || node.y > visible.maxY) continue;
+            this._drawFlameNode(node);
+        }
+        ctx.restore();
+        this.zoomValue.textContent = Math.round(this.zoom * 100) + '%';
+    }
+
+    _drawFlameNode(node) {
+        if (node.w <= 0.2) return;
+        const ctx = this.ctx;
+        const selected = node.id === this.selectionId;
+        const ratio = node.totalNs / Math.max(1, this.profile && this.profile.totalNs ? this.profile.totalNs : node.totalNs);
+        ctx.fillStyle = this._heatColor(ratio, node.depth);
+        ctx.strokeStyle = selected ? '#ffffff' : 'rgba(20, 20, 20, 0.78)';
+        ctx.lineWidth = (selected ? 2 : 1) / this.zoom;
+        ctx.fillRect(node.x, node.y, node.w, node.h);
+        ctx.strokeRect(node.x, node.y, node.w, node.h);
+        if (node.w * this.zoom > 55) {
+            ctx.save();
+            ctx.beginPath();
+            ctx.rect(node.x, node.y, node.w, node.h);
+            ctx.clip();
+            ctx.fillStyle = '#161616';
+            ctx.font = '10.5px ' + getComputedStyle(document.documentElement).getPropertyValue('--font-mono');
+            ctx.textBaseline = 'middle';
+            const label = node.name + '  ' + this._formatTime(node.totalNs);
+            ctx.fillText(this._elide(label, node.w - 8 / this.zoom, ctx), node.x + 4 / this.zoom, node.y + node.h / 2);
+            ctx.restore();
+        }
+    }
+
+    _heatColor(ratio, depth = 0) {
+        const normalized = Math.max(0, Math.min(1, Number(ratio) || 0));
+        const lightness = 36 + normalized * 28 + (depth % 3) * 2;
+        const hue = 8 + normalized * 34 + (depth % 4) * 3;
+        return 'hsl(' + hue.toFixed(1) + ', 92%, ' + lightness.toFixed(1) + '%)';
+    }
+
     _drawEdge(edge, source, target) {
         const ctx = this.ctx;
         const backEdge = target.y <= source.y || (target.y < source.y + source.h && target.x < source.x);
@@ -527,10 +854,12 @@ export class CfgGraphViewer {
         }
 
         const style = this._edgeStyle(edge.kind, backEdge);
+        const profileRatio = edge.profile && this.maxEdgeTimeNs > 0
+            ? (Number(edge.profile.timeNs) || 0) / this.maxEdgeTimeNs : 0;
         ctx.save();
         ctx.strokeStyle = style.color;
         ctx.fillStyle = style.color;
-        ctx.lineWidth = (style.width || 1.45) / this.zoom;
+        ctx.lineWidth = ((style.width || 1.45) + profileRatio * 1.5) / this.zoom;
         ctx.setLineDash(style.dash ? style.dash.map((value) => value / this.zoom) : []);
         ctx.beginPath();
         ctx.moveTo(start.x, start.y);
@@ -540,7 +869,10 @@ export class CfgGraphViewer {
         this._drawArrowHead(end, control2);
         ctx.restore();
 
-        if (edge.label && (edge.kind === 'true' || edge.kind === 'false' || edge.kind === 'short-circuit' || edge.kind === 'call')) {
+        const edgeLabel = edge.profile
+            ? (edge.label ? edge.label + ' · ' : '') + this._formatTime(edge.profile.timeNs) + ' · ' + edge.profile.count + '×'
+            : edge.label;
+        if (edgeLabel && (edge.profile || edge.kind === 'true' || edge.kind === 'false' || edge.kind === 'short-circuit' || edge.kind === 'call')) {
             const t = 0.5;
             const oneMinus = 1 - t;
             const labelX = oneMinus * oneMinus * oneMinus * start.x + 3 * oneMinus * oneMinus * t * control1.x + 3 * oneMinus * t * t * control2.x + t * t * t * end.x;
@@ -548,7 +880,7 @@ export class CfgGraphViewer {
             ctx.save();
             const mono = getComputedStyle(document.documentElement).getPropertyValue('--font-mono');
             ctx.font = (10 / this.zoom) + 'px ' + mono;
-            const labelWidth = ctx.measureText(edge.label).width + 8 / this.zoom;
+            const labelWidth = ctx.measureText(edgeLabel).width + 8 / this.zoom;
             ctx.fillStyle = '#1e1e1e';
             ctx.strokeStyle = '#3e3e42';
             ctx.lineWidth = 1 / this.zoom;
@@ -559,7 +891,7 @@ export class CfgGraphViewer {
             ctx.fillStyle = style.color;
             ctx.textAlign = 'center';
             ctx.textBaseline = 'middle';
-            ctx.fillText(edge.label, labelX, labelY + 0.5 / this.zoom);
+            ctx.fillText(edgeLabel, labelX, labelY + 0.5 / this.zoom);
             ctx.restore();
         }
     }
@@ -611,7 +943,9 @@ export class CfgGraphViewer {
         ctx.beginPath();
         ctx.roundRect(node.x, node.y, node.w, node.h, 5 / this.zoom);
         ctx.clip();
-        ctx.fillStyle = node.callTarget ? '#1f3b52' : node.entry ? '#0e639c' : node.synthetic ? '#5a2f2f' : '#303033';
+        ctx.fillStyle = node.profile && this.maxBlockTimeNs > 0
+            ? this._heatColor(node.profile.selfNs / this.maxBlockTimeNs)
+            : node.callTarget ? '#1f3b52' : node.entry ? '#0e639c' : node.synthetic ? '#5a2f2f' : '#303033';
         ctx.fillRect(node.x, node.y, node.w, headerHeight);
         ctx.restore();
 
@@ -651,8 +985,17 @@ export class CfgGraphViewer {
     _onPointerDown(event) {
         this.canvas.setPointerCapture(event.pointerId);
         const point = this._screenToWorld(event.offsetX, event.offsetY);
-        const node = this._nodeAt(point.x, point.y);
-        if (node) {
+        const node = this.viewMode === 'flame' ? this._flameNodeAt(point.x, point.y) : this._nodeAt(point.x, point.y);
+        if (node && this.viewMode === 'flame') {
+            this.drag = {
+                type: 'flame-node',
+                pointerId: event.pointerId,
+                node,
+                moved: false,
+                startX: event.clientX,
+                startY: event.clientY
+            };
+        } else if (node) {
             this.drag = {
                 type: 'node',
                 pointerId: event.pointerId,
@@ -680,7 +1023,8 @@ export class CfgGraphViewer {
     _onPointerMove(event) {
         if (!this.drag) {
             const point = this._screenToWorld(event.offsetX, event.offsetY);
-            this.canvas.classList.toggle('node-hover', !!this._nodeAt(point.x, point.y));
+            const node = this.viewMode === 'flame' ? this._flameNodeAt(point.x, point.y) : this._nodeAt(point.x, point.y);
+            this.canvas.classList.toggle('node-hover', !!node);
             return;
         }
         const dx = event.clientX - this.drag.startX;
@@ -690,6 +1034,8 @@ export class CfgGraphViewer {
             const point = this._screenToWorld(event.offsetX, event.offsetY);
             this.drag.node.x = point.x - this.drag.offsetX;
             this.drag.node.y = point.y - this.drag.offsetY;
+        } else if (this.drag.type === 'flame-node') {
+            // 火焰图保持标准布局，节点只可点击查看，不单独拖拽。
         } else {
             this.panX = this.drag.panX + dx;
             this.panY = this.drag.panY + dy;
@@ -703,7 +1049,7 @@ export class CfgGraphViewer {
         this.drag = null;
         this.canvas.classList.remove('dragging');
         try { this.canvas.releasePointerCapture(event.pointerId); } catch (_error) { /* ignore */ }
-        if (drag.type === 'node' && !drag.moved) this._setSelection(drag.node.id);
+        if ((drag.type === 'node' || drag.type === 'flame-node') && !drag.moved) this._setSelection(drag.node.id);
     }
 
     _zoomAt(screenX, screenY, nextZoom) {
@@ -731,9 +1077,20 @@ export class CfgGraphViewer {
         return null;
     }
 
+    _flameNodeAt(x, y) {
+        for (let index = this.flameNodes.length - 1; index >= 0; index--) {
+            const node = this.flameNodes[index];
+            if (x >= node.x && x <= node.x + node.w && y >= node.y && y <= node.y + node.h) return node;
+        }
+        return null;
+    }
+
     _setSelection(id) {
         this.selectionId = id;
-        this._renderInspector(this.graph.nodeMap.get(id) || null);
+        const node = this.viewMode === 'flame'
+            ? this.flameNodeMap.get(id)
+            : this.graph.nodeMap.get(id);
+        this._renderInspector(node || null);
         this._render();
     }
 
@@ -744,6 +1101,17 @@ export class CfgGraphViewer {
             return;
         }
 
+        if (node.isFlame) {
+            this.selectionSummary.textContent = node.name + ' · ' + this._formatTime(node.totalNs);
+            this.inspector.innerHTML = '<div class="cfg-inspector-content">' +
+                '<div class="cfg-inspector-title">' + this._escape(node.name) + '</div>' +
+                '<div class="cfg-inspector-subtitle">调用栈深度 ' + node.depth + '</div>' +
+                '<div class="cfg-inspector-section"><div class="cfg-inspector-section-label">采样统计</div>' +
+                '<div class="cfg-call-box">总耗时 ' + this._formatTime(node.totalNs) +
+                '<br>自耗时 ' + this._formatTime(node.selfNs) + '</div></div></div>';
+            return;
+        }
+
         this.selectionSummary.textContent = node.title;
         const meta = node.block
             ? 'PC ' + node.block.start + '–' + Math.max(node.block.start, node.block.end - 1)
@@ -751,6 +1119,12 @@ export class CfgGraphViewer {
         let html = '<div class="cfg-inspector-content">' +
             '<div class="cfg-inspector-title">' + this._escape(node.title) + '</div>' +
             '<div class="cfg-inspector-subtitle">' + this._escape(meta) + '</div>';
+
+        if (node.profile) {
+            html += '<div class="cfg-inspector-section"><div class="cfg-inspector-section-label">运行统计</div>' +
+                '<div class="cfg-call-box">自耗时 ' + this._formatTime(node.profile.selfNs) +
+                '<br>执行 ' + node.profile.count + ' 次基本块指令</div></div>';
+        }
 
         if (node.callTarget) {
             const target = this.functionMap.get(node.targetFunction);
@@ -763,11 +1137,13 @@ export class CfgGraphViewer {
             html += '<div class="cfg-inspector-section"><div class="cfg-inspector-section-label">指令</div>';
             for (const instruction of node.instructions) {
                 const source = instruction.source || {};
+                const metric = this._profileForInstruction(this.activeFunctionId, instruction.pc);
                 const location = [source.file, source.line ? 'L' + source.line : '', source.col ? 'C' + source.col : ''].filter(Boolean).join(':');
                 html += '<div class="cfg-instruction">' +
                     '<div class="cfg-instruction-head"><span class="cfg-pc">#' + instruction.pc + '</span><span class="cfg-opcode">' +
                     this._escape(instruction.op) + '</span></div>' +
-                    '<div class="cfg-instruction-text">' + this._escape(instruction.text) + '</div>' +
+                    '<div class="cfg-instruction-text">' + this._escape(instruction.text) +
+                    (metric ? ' · ' + this._formatTime(metric.timeNs) + ' · ' + metric.count + '×' : '') + '</div>' +
                     (location ? '<div class="cfg-source-location">' + this._escape(location) + '</div>' : '') +
                     (source.text ? '<pre class="cfg-source-code">' + this._escape(source.text) + '</pre>' : '') +
                     '</div>';

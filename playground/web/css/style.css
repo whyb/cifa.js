@@ -1186,6 +1186,52 @@ body.cfg-open {
     border-bottom: 1px solid var(--border);
 }
 
+.cfg-view-tabs {
+    display: inline-flex;
+    align-items: center;
+    padding: 2px;
+    background: #181818;
+    border: 1px solid #3e3e42;
+    border-radius: 3px;
+}
+
+.cfg-view-tab {
+    height: 22px;
+    padding: 0 9px;
+    color: var(--fg-secondary);
+    background: transparent;
+    border: none;
+    border-radius: 2px;
+    cursor: pointer;
+    font-size: 11px;
+}
+
+.cfg-view-tab:hover {
+    color: var(--fg-bright);
+    background: var(--bg-hover);
+}
+
+.cfg-view-tab.active {
+    color: #ffffff;
+    background: #37373d;
+}
+
+.cfg-tool-btn.profile {
+    color: #ffffff;
+    background: #0e639c;
+    border-color: #1177bb;
+}
+
+.cfg-tool-btn.profile:hover {
+    background: #1177bb;
+}
+
+.cfg-tool-btn.profile:disabled {
+    color: var(--fg-muted);
+    background: var(--bg-input);
+    border-color: var(--border);
+    cursor: wait;
+}
 .cfg-tool-btn {
     height: 24px;
     min-width: 50px;

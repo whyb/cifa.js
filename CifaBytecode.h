@@ -1,6 +1,7 @@
 #pragma once
 #include "Cifa.h"
 #include <optional>
+#include <chrono>
 #include <memory_resource>
 
 namespace cifa
@@ -541,6 +542,55 @@ class CifaBytecode : public Cifa
         Object make_no_value(const std::string& function_name, const SourceLocation& call_site) const;
         bool should_stop() const { return exit_requested || !error.empty(); }
     };
+    struct ProfileInstructionGuard
+    {
+        CifaBytecode& owner;
+        std::string function_id;
+        std::vector<std::string> stack_snapshot;
+        size_t pc = 0;
+        size_t previous_pc = 0;
+        std::uint64_t start_ns = 0;
+
+        ProfileInstructionGuard(CifaBytecode& owner, std::string function_id,
+            std::vector<std::string> stack_snapshot, size_t pc, size_t previous_pc);
+        ~ProfileInstructionGuard();
+    };
+
+    struct ProfileState
+    {
+        struct Metric
+        {
+            size_t count = 0;
+            std::uint64_t time_ns = 0;
+        };
+        struct FunctionMetric
+        {
+            size_t calls = 0;
+            size_t instructions = 0;
+            std::uint64_t self_ns = 0;
+            std::uint64_t total_ns = 0;
+        };
+        struct FlameMetric
+        {
+            std::uint64_t self_ns = 0;
+            std::uint64_t total_ns = 0;
+        };
+
+        bool enabled = false;
+        bool truncated = false;
+        size_t instruction_limit = 2000000;
+        size_t instruction_count = 0;
+        std::uint64_t total_ns = 0;
+        std::unordered_map<std::string, Metric> instructions;
+        std::unordered_map<std::string, Metric> edges;
+        std::unordered_map<std::string, FunctionMetric> functions;
+        std::unordered_map<std::string, FlameMetric> flames;
+        std::vector<std::string> stack;
+        std::vector<size_t> last_pc;
+    };
+
+    ProfileState profile_state;
+
     std::shared_ptr<Module> module_data = std::make_shared<Module>();
     bool& compiled_valid = module_data->compiled_valid;
     std::vector<Module::SourceLine>& source_lines = module_data->source_lines;
@@ -641,11 +691,19 @@ public:
     bool compile_script(std::string script);
     bool compile_file(const std::string& filename);
     std::string get_cfg_json() const;
+    void set_profiling_enabled(bool enabled);
+    bool is_profiling_enabled() const;
+    void reset_profile();
+    std::string get_profile_json() const;
     Object run(const std::string& entry_label = {});
     Object run_script(std::string script);
     Object run_file(const std::string& filename);
 
 private:
+    void profile_enter_function(const std::string& id);
+    void profile_leave_function();
+    void record_profile_instruction(const std::string& function_id, size_t pc,
+        size_t previous_pc, const std::vector<std::string>& stack, std::uint64_t duration_ns);
     void translate(Cifa& compiler, size_t script_function_version);
     void prepare_compile_visibility();
     void clear_compile_visibility();
