@@ -10,7 +10,7 @@ set TARGET_DIR=..\web
 set TARGET_JS=%TARGET_DIR%\cifa.js
 set TARGET_WASM=%TARGET_DIR%\cifa.wasm
 
-set SOURCES=cifa_wrapper.cpp ..\..\Cifa.cpp
+set SOURCES=cifa_wrapper.cpp ..\..\Cifa.cpp ..\..\CifaBytecode.cpp
 
 :: --- 逻辑入口 ---
 set ACTION=%1

@@ -1,7 +1,7 @@
 # Emscripten Cifa Playground Makefile
 
 EMCC = emcc
-CFLAGS = -O3 -std=c++17 -I../../
+CFLAGS = -O3 -std=c++23 -I../../
 LDFLAGS = -s WASM=1 \
           -s EXPORT_ES6=1 \
           -s MODULARIZE=1 \
@@ -18,13 +18,13 @@ TARGET_JS = $(TARGET_DIR)/cifa.js
 TARGET_WASM = $(TARGET_DIR)/cifa.wasm
 
 # 源文件
-SOURCES = cifa_wrapper.cpp ../../Cifa.cpp
+SOURCES = cifa_wrapper.cpp ../../Cifa.cpp ../../CifaBytecode.cpp
 
 .PHONY: all clean
 
 all: $(TARGET_JS)
 
-$(TARGET_JS): $(SOURCES) ../../Cifa.h
+$(TARGET_JS): $(SOURCES) ../../Cifa.h ../../CifaBytecode.h
 	$(EMCC) $(CFLAGS) $(LDFLAGS) -o $@ $(SOURCES)
 
 clean:
@@ -32,4 +32,4 @@ clean:
 
 # 开发模式（带调试信息）
 debug:
-	$(EMCC) -g -O0 -std=c++17 -I../../ $(LDFLAGS) -s ASSERTIONS=1 -o $(TARGET_JS) $(SOURCES)
+	$(EMCC) -g -O0 -std=c++23 -I../../ $(LDFLAGS) -s ASSERTIONS=1 -o $(TARGET_JS) $(SOURCES)

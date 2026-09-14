@@ -31,11 +31,11 @@ Cifa 脚本引擎的 Web 在线解释器，网站地址是： [https://whyb.gith
 
 ## 引擎 API 同步说明
 
-本仓库的 Cifa 引擎已升级为「编译/执行分离」架构，Web 端对应的同步点如下：
+本仓库的 Cifa 引擎已升级为「字节码编译/执行分离」架构，Web 端对应的同步点如下：
 
 - **新 API**：
-  - `Ast compile_script(script)` / `Ast compile_file(filename)`：只编译不执行，返回可移动的独立 AST。
-  - `Object run(Ast& program, entry_label = "")`：执行已编译的 AST；可指定顶层标签作为入口。
+  - `bool compile_script(script)` / `bool compile_file(filename)`：只编译为字节码，不执行。
+  - `Object run(entry_label = "")`：执行已编译的字节码；可指定顶层标签作为入口。
   - `run_script` / `run_file` 现在是 `compile_*` + `run` 的组合调用。
 - **Lint 变纯静态检查**：`lint` / `lintWithFiles` 改用 `compile_script` / `compile_file`，只报告语法与静态错误，不再真正执行脚本。
 - **多文件执行**：`executeWithFiles` / `lintWithFiles` 先把编辑器最新内容写入 VFS 的 /workspace 并覆盖入口文件，再以入口文件路径调用 `compile_file`/`run`，入口文件所在目录自动参与 #include 搜索。

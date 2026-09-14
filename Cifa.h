@@ -20,17 +20,22 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
+#include <variant>
 #include <vector>
 
 namespace cifa
 {
 struct CalUnit;
 class Cifa;
+class CifaBytecode;
 
 struct Object
 {
     friend CalUnit;
     friend Cifa;
+    friend class CifaBytecode;
+
+    using Storage = std::variant<std::monostate, std::int64_t, double, bool, std::any>;
 
     Object() {}
 
@@ -58,12 +63,12 @@ struct Object
 
     Object(const std::string& str)
     {
-        value = str;
+        value = std::any(str);
     }
 
     Object(const std::string& str, const std::string& t)
     {
-        value = str;
+        value = std::any(str);
         type1 = t;
     }
 
@@ -99,7 +104,7 @@ struct Object
             && !std::integral<std::decay_t<T>> && !std::floating_point<std::decay_t<T>>)
     Object(const T& v)
     {
-        value = v;
+        value = std::any(v);
     }
 
     Object(int v)
@@ -127,17 +132,17 @@ struct Object
 
     bool toBool() const
     {
-        if (isType<bool>())
+        if (const auto* boolean = std::get_if<bool>(&value))
         {
-            return std::any_cast<bool>(value);
+            return *boolean;
         }
-        if (isType<std::int64_t>())
+        if (const auto* integer = std::get_if<std::int64_t>(&value))
         {
-            return std::any_cast<std::int64_t>(value) != 0;
+            return *integer != 0;
         }
-        if (isType<double>())
+        if (const auto* floating = std::get_if<double>(&value))
         {
-            return std::any_cast<double>(value) != 0.0;
+            return *floating != 0.0;
         }
         report_conversion_error("bool");
         return false;
@@ -156,11 +161,11 @@ struct Object
 
     std::int64_t toInt64() const
     {
-        if (isType<std::int64_t>()) { return std::any_cast<std::int64_t>(value); }
-        if (isType<bool>()) { return std::any_cast<bool>(value) ? 1 : 0; }
-        if (isType<double>())
+        if (const auto* integer = std::get_if<std::int64_t>(&value)) { return *integer; }
+        if (const auto* boolean = std::get_if<bool>(&value)) { return *boolean ? 1 : 0; }
+        if (const auto* floating = std::get_if<double>(&value))
         {
-            const double number = std::any_cast<double>(value);
+            const double number = *floating;
             if (!std::isfinite(number) || number >= 9223372036854775808.0
                 || number < -9223372036854775808.0)
             {
@@ -180,17 +185,17 @@ struct Object
 
     double toDouble() const
     {
-        if (isType<double>())
+        if (const auto* floating = std::get_if<double>(&value))
         {
-            return std::any_cast<double>(value);
+            return *floating;
         }
-        if (isType<std::int64_t>())
+        if (const auto* integer = std::get_if<std::int64_t>(&value))
         {
-            return static_cast<double>(std::any_cast<std::int64_t>(value));
+            return static_cast<double>(*integer);
         }
-        if (isType<bool>())
+        if (const auto* boolean = std::get_if<bool>(&value))
         {
-            return std::any_cast<bool>(value) ? 1.0 : 0.0;
+            return *boolean ? 1.0 : 0.0;
         }
         report_conversion_error("double");
         return NAN;
@@ -198,9 +203,9 @@ struct Object
 
     std::string toString() const
     {
-        if (value.type() == typeid(std::string))
+        if (const auto* object = std::get_if<std::any>(&value); object != nullptr && object->type() == typeid(std::string))
         {
-            return std::any_cast<std::string>(value);
+            return std::any_cast<std::string>(*object);
         }
         report_conversion_error("string");
         return "";
@@ -210,9 +215,21 @@ struct Object
     template <typename T>
     T to() const
     {
-        if (value.type() == typeid(T))
+        if constexpr (std::same_as<T, std::int64_t>)
         {
-            return std::any_cast<T>(value);
+            if (const auto* integer = std::get_if<std::int64_t>(&value)) return *integer;
+        }
+        else if constexpr (std::same_as<T, double>)
+        {
+            if (const auto* floating = std::get_if<double>(&value)) return *floating;
+        }
+        else if constexpr (std::same_as<T, bool>)
+        {
+            if (const auto* boolean = std::get_if<bool>(&value)) return *boolean;
+        }
+        if (const auto* object = std::get_if<std::any>(&value); object != nullptr && object->type() == typeid(T))
+        {
+            return std::any_cast<T>(*object);
         }
         report_conversion_error(typeid(T).name());
         return T();
@@ -223,9 +240,21 @@ struct Object
     template <typename T>
     const T& ref() const
     {
-        if (value.type() == typeid(T))
+        if constexpr (std::same_as<T, std::int64_t>)
         {
-            return std::any_cast<const T&>(value);
+            if (const auto* integer = std::get_if<std::int64_t>(&value)) return *integer;
+        }
+        else if constexpr (std::same_as<T, double>)
+        {
+            if (const auto* floating = std::get_if<double>(&value)) return *floating;
+        }
+        else if constexpr (std::same_as<T, bool>)
+        {
+            if (const auto* boolean = std::get_if<bool>(&value)) return *boolean;
+        }
+        if (const auto* object = std::get_if<std::any>(&value); object != nullptr && object->type() == typeid(T))
+        {
+            return std::any_cast<const T&>(*object);
         }
         report_conversion_error(typeid(T).name());
         return empty_reference<T>();
@@ -234,16 +263,34 @@ struct Object
     template <typename T>
     T& ref()
     {
-        if (value.type() == typeid(T))
+        if constexpr (std::same_as<T, std::int64_t>)
         {
-            return std::any_cast<T&>(value);
+            if (auto* integer = std::get_if<std::int64_t>(&value)) return *integer;
+        }
+        else if constexpr (std::same_as<T, double>)
+        {
+            if (auto* floating = std::get_if<double>(&value)) return *floating;
+        }
+        else if constexpr (std::same_as<T, bool>)
+        {
+            if (auto* boolean = std::get_if<bool>(&value)) return *boolean;
+        }
+        if (auto* object = std::get_if<std::any>(&value); object != nullptr && object->type() == typeid(T))
+        {
+            return std::any_cast<T&>(*object);
         }
         report_conversion_error(typeid(T).name());
         return empty_reference<T>();
     }
 
     template <typename T>
-    bool isType() const { return value.type() == typeid(T); }
+    bool isType() const
+    {
+        if constexpr (std::same_as<T, std::int64_t> || std::same_as<T, double> || std::same_as<T, bool>)
+            return std::holds_alternative<T>(value);
+        else if (const auto* object = std::get_if<std::any>(&value)) return object->type() == typeid(T);
+        else return false;
+    }
 
     bool isNumber() const
     {
@@ -257,7 +304,7 @@ struct Object
 
     bool isEffectNumber() const { return isNumber() && !std::isnan(toDouble()) && !std::isinf(toDouble()); }
 
-    bool hasValue() const { return value.has_value(); }
+    bool hasValue() const { return !std::holds_alternative<std::monostate>(value); }
 
     const std::string& getSpecialType() const { return type1; }
 
@@ -265,7 +312,14 @@ struct Object
 
     bool isTyped() const { return !declared_type_name.empty(); }
 
-    std::type_info const& getType() const { return value.type(); }
+    std::type_info const& getType() const
+    {
+        if (std::holds_alternative<std::int64_t>(value)) return typeid(std::int64_t);
+        if (std::holds_alternative<double>(value)) return typeid(double);
+        if (std::holds_alternative<bool>(value)) return typeid(bool);
+        if (const auto* object = std::get_if<std::any>(&value)) return object->type();
+        return typeid(void);
+    }
 
 private:
     struct NoValue
@@ -277,7 +331,7 @@ private:
     static Object make_no_value(const std::string& function_name, std::string call_frame)
     {
         Object result;
-        result.value = NoValue{ function_name, std::move(call_frame) };
+        result.value = std::any(NoValue{ function_name, std::move(call_frame) });
         result.type1 = "NoValue";
         return result;
     }
@@ -288,7 +342,8 @@ private:
         {
             return false;
         }
-        const auto* no_value = std::any_cast<NoValue>(&value);
+        const auto* object = std::get_if<std::any>(&value);
+        const auto* no_value = object == nullptr ? nullptr : std::any_cast<NoValue>(object);
         const std::string function_name = no_value == nullptr ? "<unknown>" : no_value->function_name;
         report_runtime_error("function '" + function_name + "' has no return value", this);
         return true;
@@ -298,7 +353,7 @@ private:
     {
         if (report_no_value()) { return; }
         const std::string object_name = name.empty() ? "<temporary>" : name;
-        const std::string source_type = value.has_value() ? value.type().name() : "<empty>";
+        const std::string source_type = hasValue() ? getType().name() : "<empty>";
         report_runtime_error("type conversion failed: variable '" + object_name + "' from " + source_type + " to " + target_type, this);
     }
 
@@ -333,11 +388,11 @@ private:
 
     inline static thread_local std::vector<std::function<void(const std::string&, const Object*)>> runtime_error_reporters;
 
-    std::any value;
+    Storage value;
     std::type_index bound_type = typeid(void);
     std::string declared_type_name;
     std::string element_type_name;
-    std::string type1;        //特别的类型，用于Error、break、continue
+    std::string type1;        //特别的值类型，例如 Error、NoValue
     std::string name;
     const Object* argument_origin = nullptr;
 };
@@ -423,32 +478,9 @@ struct SourceLineInfo
     std::string text;
 };
 
-class Ast
-{
-    friend class Cifa;
-
-    CalUnit root;
-    std::unordered_map<std::string, size_t> labels;
-    std::unordered_map<std::string, FunctionOverloads> functions;
-    std::unordered_map<std::string, std::vector<StructField>> struct_defs;
-    std::vector<SourceLineInfo> source_line_infos;
-    bool compiling = false;
-    bool compiled = false;
-    bool compile_failed = false;
-
-public:
-    Ast() = default;
-    Ast(const Ast&) = delete;
-    Ast& operator=(const Ast&) = delete;
-    Ast(Ast&&) noexcept = default;
-    Ast& operator=(Ast&&) noexcept = default;
-
-    bool valid() const { return compiled && !compile_failed; }
-    explicit operator bool() const { return valid(); }
-};
-
 class Cifa
 {
+    friend class CifaBytecode;
 public:
     using func_type = std::function<Object(ObjectVector&)>;
     using ScopeStack = std::vector<std::unordered_map<std::string, Object>>;
@@ -541,6 +573,9 @@ private:
     inline static const std::set<std::string> builtin_methods = { "push_back", "pop_back", "resize", "insert", "erase", "clear", "contains", "keys" };
 
     std::unordered_map<std::string, func_type> functions;     //在宿主程序中注册的函数
+    size_t function_version = 0;
+    std::unordered_map<std::string, size_t> function_generations;
+    std::unordered_map<std::string, size_t> builtin_function_generations;
     std::unordered_map<std::string, FunctionOverloads> functions2;    //执行脚本后注册的全局脚本函数
     std::unordered_map<std::string, std::vector<StructField>> struct_defs;    //执行脚本后注册的全局 struct
 
@@ -589,24 +624,49 @@ private:
         std::string return_type;
     };
 
+    enum class ControlFlow
+    {
+        None,
+        Break,
+        Continue,
+        Goto
+    };
+
+    struct RuntimeFrame
+    {
+        const CalUnit* node = nullptr;
+        const std::vector<SourceLineInfo>* source_lines = nullptr;
+        std::string function_name;
+    };
+
     struct ExecutionContext
     {
-        explicit ExecutionContext(Ast& current_program) : program(current_program) { }
-
-        Ast& program;
-        size_t start_index = 0;
-        std::vector<std::string> runtime_call_stack;
+        CalUnit root;
+        std::unordered_map<std::string, FunctionOverloads> functions;
+        std::unordered_map<std::string, std::vector<StructField>> struct_defs;
+        std::vector<SourceLineInfo> source_line_infos;
+        std::vector<RuntimeFrame> runtime_call_stack;
         std::vector<std::string> runtime_error_call_stack;
         const std::vector<CalUnit>* active_function_arguments = nullptr;
         const ObjectVector* active_function_values = nullptr;
         std::string runtime_error_message;
         std::vector<ReturnState> return_states;
         ErrorSet errors;
+        ControlFlow control_flow = ControlFlow::None;
+        std::string goto_label;
         bool exit_requested = false;
     };
 
     std::deque<ExecutionContext> execution_contexts;
-    Ast compilation_ast;
+    CalUnit compilation_root;
+    std::unordered_map<std::string, FunctionOverloads> compilation_functions;
+    std::unordered_map<std::string, std::vector<StructField>> compilation_struct_defs;
+    std::vector<SourceLineInfo> compilation_source_line_infos;
+    const std::unordered_map<std::string, FunctionOverloads>* compile_visible_functions = nullptr;
+    const std::unordered_map<std::string, std::vector<StructField>>* compile_visible_struct_defs = nullptr;
+    bool compiling = false;
+    bool compiled = false;
+    bool compile_failed = false;
     ErrorSet errors;
     std::vector<std::string> runtime_error_call_stack;
     std::string runtime_error_message;
@@ -645,6 +705,8 @@ public:
             }
             return call_registered_function(func, args, std::index_sequence_for<Args...>{});
         };
+        ++function_version;
+        ++function_generations[name];
         return true;
     }
 
@@ -688,13 +750,8 @@ public:
 
     void set_include_dirs(const std::vector<std::string>& dirs);    //设置#include搜索目录
 
-    Object run_script(std::string script);    //运行脚本，使用实例全局变量表；按当前目录和include搜索目录处理#include
-
-    Object run_file(const std::string& filename);    //从文件运行脚本，支持#include指令，并将文件所在目录作为搜索路径
-
-    Ast compile_script(std::string script);    //解析并返回独立 AST，不执行
-    Ast compile_file(const std::string& filename);    //从文件解析并返回独立 AST，不执行
-    Object run(Ast& program, const std::string& entry_label = "");    //执行传入 AST；空标签从第一个顶层节点开始
+    Object run_script(std::string script);
+    Object run_file(const std::string& filename);
 
     bool has_error() const;
 
@@ -752,7 +809,7 @@ private:
     Object eval_scoped(CalUnit& c, ScopeStack& scopes);
     bool eval_condition(CalUnit& c, ScopeStack& scopes);
     Object run_function(const CalUnit& call_site, std::vector<CalUnit>& vc, ScopeStack& scopes);
-    void run_compilation(const std::function<void(Ast&)>& action);
+    void run_compilation(const std::function<void()>& action);
     Object eval_builtin_method(const CalUnit& method, Object& obj, std::vector<CalUnit>& args, ScopeStack& scopes);
     bool apply_declared_type(Object& object, const std::string& type_name, const CalUnit* location, bool infer_auto);
     Object convert_object_type(const Object& source, const std::string& type_name, const CalUnit* location);
@@ -763,9 +820,14 @@ private:
     const ErrorSet& active_errors() const;
     const std::vector<SourceLineInfo>& active_source_line_infos() const;
     void record_error(ErrorMessage error);
+
+private:
+    bool compile_script_internal(std::string script);
+    bool compile_file_internal(const std::string& filename);
+    static bool parse_number_literal(const std::string& text, Object& value);
+    Object run_compilation_result();
     FunctionOverloads* find_script_function(const std::string& name);
     const std::vector<StructField>* find_struct_definition(const std::string& name) const;
-
     void expand_comma(CalUnit& c1, std::vector<CalUnit>& v);
     CalUnitType guess_char(char c);
     std::list<CalUnit> split(std::string& str);
@@ -792,17 +854,21 @@ private:
     Object* find_object_from_inner(ScopeStack& scopes, const std::string& name);
     bool has_return_value() const;
     Object& return_value();
+    void set_control_flow(ControlFlow flow, std::string label = {});
+    bool consume_control_flow(ControlFlow flow);
     std::string format_runtime_frame(const CalUnit& c) const;
+    static std::string format_runtime_frame(const CalUnit& c, const std::vector<SourceLineInfo>& source_line_infos);
+    static std::string format_runtime_frame(const RuntimeFrame& frame);
     void set_runtime_error(const std::string& message, const Object* source = nullptr, const CalUnit* location = nullptr);
     void clear_runtime_error();
     bool should_stop_execution() const { return has_runtime_error() || is_exit_requested(); }
-    bool is_control_signal(const Object& value, const std::string& signal) const;
     std::string format_runtime_error() const;
     void print_runtime_error() const;
     Object make_error_result() const;
-    void compile_pipeline(std::string str, Ast& program);
+    void compile_pipeline(std::string str);
 
-    void check_cal_unit(CalUnit& c, CalUnit* father, std::unordered_map<std::string, Object>& p);
+    void check_cal_unit(CalUnit& c, CalUnit* father, std::unordered_map<std::string, Object>& p,
+        size_t loop_depth = 0, size_t switch_depth = 0);
     void check_non_block_body(CalUnit& c, const std::unordered_map<std::string, Object>& p);
 
     static std::string get_directory(const std::string& filepath);
