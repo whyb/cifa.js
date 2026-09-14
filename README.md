@@ -1,6 +1,8 @@
 # Cifa Script Playground
 
 Cifa 脚本引擎的 Web 在线解释器，网站地址是： [https://whyb.github.io/cifa.js/playground/web](https://whyb.github.io/cifa.js/playground/web)
+[![screenshot1](imgs/main.png)](https://whyb.github.io/cifa.js/playground/web)
+[![screenshot2](imgs/flow.png)](https://whyb.github.io/cifa.js/playground/web)
 
 ## 缘起与致敬
 
