@@ -14,7 +14,6 @@
 #include <set>
 #include <stdexcept>
 #include <string>
-#include <tuple>
 #include <type_traits>
 #include <typeindex>
 #include <unordered_map>
@@ -443,14 +442,14 @@ struct CalUnit
 
     CalUnit() {}
 
-    bool can_cal()
+    bool can_cal() const
     {
         return type == CalUnitType::Constant || type == CalUnitType::String || type == CalUnitType::Parameter
             || type == CalUnitType::Function || type == CalUnitType::Cast
             || type == CalUnitType::Operator && v.size() > 0;
     }
 
-    bool is_statement()
+    bool is_statement() const
     {
         return suffix || !can_cal();
     }
@@ -570,7 +569,7 @@ private:
     //内置的运算符表示列表，用户可扩展运算符时会用到，注意这些运算符在语法分析阶段会被转换为对应的符号（如and转换为&&），因此用户扩展时也应使用符号形式的运算符
     inline static const std::map<std::string, std::string> op_representations = { { "and", "&&" }, { "and_eq", "&=" }, { "bitand", "&" }, { "bitor", "|" }, { "compl", "~" }, { "not", "!" }, { "not_eq", "!=" }, { "or", "||" }, { "or_eq", "|=" }, { "xor", "^" }, { "xor_eq", "^=" }, { "<%", "{" }, { "%>", "}" }, { "<:", "[" }, { ":>", "]" }, { "%:", "#" }, { "%:%:", "##" } };
     //内置的数组/map方法列表
-    inline static const std::set<std::string> builtin_methods = { "push_back", "pop_back", "resize", "insert", "erase", "clear", "contains", "keys" };
+    inline static const std::set<std::string> builtin_methods = { "push_back", "pop_back", "resize", "reserve", "insert", "erase", "clear", "contains", "keys" };
 
     std::unordered_map<std::string, func_type> functions;     //在宿主程序中注册的函数
     size_t function_version = 0;
@@ -664,6 +663,7 @@ private:
     std::vector<SourceLineInfo> compilation_source_line_infos;
     const std::unordered_map<std::string, FunctionOverloads>* compile_visible_functions = nullptr;
     const std::unordered_map<std::string, std::vector<StructField>>* compile_visible_struct_defs = nullptr;
+    const std::unordered_set<std::string>* compile_visible_host_functions = nullptr;
     bool compiling = false;
     bool compiled = false;
     bool compile_failed = false;

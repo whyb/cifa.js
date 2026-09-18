@@ -45,6 +45,8 @@ Cifa 脚本引擎的 Web 在线解释器，网站地址是： [https://whyb.gith
 - **CFG 导出**：`getProgramCfg` / `getProgramCfgWithFiles` 返回由真实字节码生成的基本块、指令和标准控制流边，不执行脚本。
 - **性能采样**：`executeWithProfile` / `executeWithFilesWithProfile` 在普通执行结果上附带函数、指令、控制边和火焰图调用栈数据。
 - **多文件执行**：`executeWithFiles` / `lintWithFiles` 先把编辑器最新内容写入 VFS 的 /workspace 并覆盖入口文件，再以入口文件路径调用 `compile_file`/`run`，入口文件所在目录自动参与 #include 搜索。
+- **CFG/火焰图兼容层**：新版热字节码不再公开私有布局，Playground 通过 `get_cfg_json` 和可选 profiling 钩子生成的只读诊断层继续支持控制流图与运行时采样。
+- **WASM Memory64**：新版字节码按 64 位地址布局校验，Playground 使用 `-sMEMORY64=1` 构建，需使用支持 WebAssembly Memory64 的现代浏览器。
 - **错误定位增强**：错误信息携带文件名（如 /workspace/sub/main.c）与出错行源码文本，Problems 面板会显示源码行，点击错误项可跨文件跳转到对应标签页。
 - **脚本语言新特性**：
   - 十六进制 `0xFF`、二进制 `0b1010`、八进制 `077`（前导 0）字面量。
@@ -88,9 +90,4 @@ python -m http.server 8080
 
 ## 浏览器兼容性
 
-本工具依赖现代 Web 技术栈，需确保浏览器支持 **WebAssembly** 与 **Web Worker**：
-
-  * Chrome 80+
-  * Firefox 75+
-  * Edge 80+
-  * Safari 14+
+本工具依赖现代 Web 技术栈，需确保浏览器支持 **WebAssembly Memory64** 与 **Web Worker**。新版字节码按 64 位地址布局构建，旧版仅支持 wasm32 的浏览器无法加载当前 WASM。

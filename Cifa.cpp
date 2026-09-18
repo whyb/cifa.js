@@ -2,7 +2,6 @@
 #include <algorithm>
 #include <bit>
 #include <cerrno>
-#include <chrono>
 #include <cstdlib>
 #include <fstream>
 #include <iostream>
@@ -273,49 +272,32 @@ Cifa::Cifa()
     register_function("ifv", ifv);
     register_function("ifvalue", ifv);
 
-    register_function("max", [](ObjectVector& x) -> Object
+    const auto extremum = []<bool maximum>(ObjectVector& arguments) -> Object
         {
-            if (x.size() == 0) { return cifa::Object(); }
-            if (x.size() == 1)
-            {
-                return x[0];
-            }
-            if (!x[0].isNumber()) { return x[0].to<double>(); }
-            bool floating = x[0].isType<double>();
+            if (arguments.empty()) return Object();
+            if (arguments.size() == 1) return arguments[0];
+            if (!arguments[0].isNumber()) return arguments[0].to<double>();
+            bool floating = arguments[0].isType<double>();
             size_t best = 0;
-            for (size_t i = 1; i < x.size(); i++)
+            for (size_t index = 1; index < arguments.size(); ++index)
             {
-                if (!x[i].isNumber()) { return x[i].to<double>(); }
-                floating = floating || x[i].isType<double>();
-                if (numeric_less(x[best], x[i]))
+                if (!arguments[index].isNumber()) return arguments[index].to<double>();
+                floating = floating || arguments[index].isType<double>();
+                if constexpr (maximum)
                 {
-                    best = i;
+                    if (numeric_less(arguments[best], arguments[index])) best = index;
+                }
+                else
+                {
+                    if (numeric_less(arguments[index], arguments[best])) best = index;
                 }
             }
-            return floating ? Object(x[best].toDouble()) : Object(x[best].toInt64());
-        });
-
-    register_function("min", [](ObjectVector& x) -> Object
-        {
-            if (x.size() == 0) { return cifa::Object(); }
-            if (x.size() == 1)
-            {
-                return x[0];
-            }
-            if (!x[0].isNumber()) { return x[0].to<double>(); }
-            bool floating = x[0].isType<double>();
-            size_t best = 0;
-            for (size_t i = 1; i < x.size(); i++)
-            {
-                if (!x[i].isNumber()) { return x[i].to<double>(); }
-                floating = floating || x[i].isType<double>();
-                if (numeric_less(x[i], x[best]))
-                {
-                    best = i;
-                }
-            }
-            return floating ? Object(x[best].toDouble()) : Object(x[best].toInt64());
-        });
+            return floating ? Object(arguments[best].toDouble()) : Object(arguments[best].toInt64());
+        };
+    register_function("max", [extremum](ObjectVector& arguments)
+        { return extremum.operator()<true>(arguments); });
+    register_function("min", [extremum](ObjectVector& arguments)
+        { return extremum.operator()<false>(arguments); });
     register_function("random", [this](ObjectVector& x) -> Object
         {
             if (x.size() == 0) { return Object(double(rand()) / RAND_MAX); }
@@ -866,6 +848,11 @@ Object Cifa::eval_builtin_method(const CalUnit& method, Object& obj, std::vector
             }
             return Object(double(arr.size()));
         }
+        if (method_name == "reserve")
+        {
+            if (!args.empty()) { arr.reserve(size_t(eval_scoped(args[0], scopes).toInt())); }
+            return Object(double(arr.size()));
+        }
         if (method_name == "insert")
         {
             if (args.size() >= 2)
@@ -960,7 +947,7 @@ Object Cifa::eval_builtin_method(const CalUnit& method, Object& obj, std::vector
             return Object(std::move(keys));
         }
         if (method_name == "push_back" || method_name == "pop_back"
-            || method_name == "resize" || method_name == "insert")
+            || method_name == "resize" || method_name == "reserve" || method_name == "insert")
         {
             set_runtime_error(method_name + "() is not supported on maps", nullptr, &method);
             return Object();
@@ -1064,7 +1051,7 @@ Object Cifa::eval_scoped(CalUnit& c, ScopeStack& scopes)
                 {
                     //内置的数组/map方法：需要引用修改原始对象
                     auto& method_name = c.v[1].str;
-                    if (method_name == "push_back" || method_name == "pop_back" || method_name == "resize"
+                    if (method_name == "push_back" || method_name == "pop_back" || method_name == "resize" || method_name == "reserve"
                         || method_name == "clear" || method_name == "insert" || method_name == "erase"
                         || method_name == "contains" || method_name == "keys")
                     {
@@ -2748,7 +2735,8 @@ void Cifa::combine_functions2(std::list<CalUnit>& ppp, bool global_scope)
                 {
                     add_error(*it, "script function '{}' is only allowed in global scope", name);
                 }
-                else if (functions.contains(name))
+                else if (functions.contains(name)
+                    || (compile_visible_host_functions != nullptr && compile_visible_host_functions->contains(name)))
                 {
                     add_error(*it, "script function '{}' conflicts with a host function", name);
                 }
@@ -3719,7 +3707,9 @@ void Cifa::check_cal_unit(CalUnit& c, CalUnit* father, std::unordered_map<std::s
             add_error(c, "function '{}' has no operands", c.str);
         }
         //内置方法名不视为未定义函数
-        if (!functions.contains(c.str) && !builtin_methods.contains(c.str)
+        if (!functions.contains(c.str)
+            && (compile_visible_host_functions == nullptr || !compile_visible_host_functions->contains(c.str))
+            && !builtin_methods.contains(c.str)
             && (script_overloads == nullptr || script_overloads->empty()))
         {
             add_error(c, "function '{}' is not defined", c.str);

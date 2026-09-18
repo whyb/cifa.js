@@ -3,6 +3,7 @@
 EMCC = emcc
 CFLAGS = -O3 -std=c++23 -I../../
 LDFLAGS = -s WASM=1 \
+          -s MEMORY64=1 \
           -s EXPORT_ES6=1 \
           -s MODULARIZE=1 \
           -s EXPORT_NAME="CifaModule" \
@@ -24,7 +25,7 @@ SOURCES = cifa_wrapper.cpp cifa_cfg.cpp ../../Cifa.cpp ../../CifaBytecode.cpp
 
 all: $(TARGET_JS)
 
-$(TARGET_JS): $(SOURCES) ../../Cifa.h ../../CifaBytecode.h
+$(TARGET_JS): $(SOURCES) ../../Cifa.h ../../CifaBytecode.h ../../CifaMemory.h ../../CifaPmrAny.h
 	$(EMCC) $(CFLAGS) $(LDFLAGS) -o $@ $(SOURCES)
 
 clean:

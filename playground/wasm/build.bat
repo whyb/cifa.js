@@ -4,7 +4,7 @@ setlocal enabledelayedexpansion
 :: --- 配置变量 (对应 Makefile 变量) ---
 set EMCC=emcc
 set CFLAGS=-O3 -std=c++23 -I../../
-set LDFLAGS=-s WASM=1 -s EXPORT_ES6=1 -s MODULARIZE=1 -s EXPORT_NAME="CifaModule" -s ALLOW_MEMORY_GROWTH=1 -s INITIAL_MEMORY=32MB -s MAXIMUM_MEMORY=256MB -s STACK_SIZE=8MB --bind
+set LDFLAGS=-s WASM=1 -s MEMORY64=1 -s EXPORT_ES6=1 -s MODULARIZE=1 -s EXPORT_NAME="CifaModule" -s ALLOW_MEMORY_GROWTH=1 -s INITIAL_MEMORY=32MB -s MAXIMUM_MEMORY=256MB -s STACK_SIZE=8MB --bind
 
 set TARGET_DIR=..\web
 set TARGET_JS=%TARGET_DIR%\cifa.js

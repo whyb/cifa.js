@@ -211,6 +211,7 @@ std::string CifaBytecode::get_cfg_json() const
         switch (opcode)
         {
         case Opcode::Constant: return "Constant";
+        case Opcode::ConstantLocal: return "ConstantLocal";
         case Opcode::Load: return "Load";
         case Opcode::LoadLocal: return "LoadLocal";
         case Opcode::DeclareLocal: return "DeclareLocal";
@@ -267,6 +268,7 @@ std::string CifaBytecode::get_cfg_json() const
         case Opcode::Peek: return "Peek";
         case Opcode::Array: return "Array";
         case Opcode::Index: return "Index";
+        case Opcode::IndexLocal: return "IndexLocal";
         case Opcode::RangeBegin: return "RangeBegin";
         case Opcode::RangeNext: return "RangeNext";
         case Opcode::RangeEnd: return "RangeEnd";
@@ -275,10 +277,17 @@ std::string CifaBytecode::get_cfg_json() const
         case Opcode::MethodBegin: return "MethodBegin";
         case Opcode::MethodValue: return "MethodValue";
         case Opcode::MethodPush: return "MethodPush";
+        case Opcode::ArrayPushGlobal: return "ArrayPushGlobal";
+        case Opcode::ArrayPushGlobalLocal: return "ArrayPushGlobalLocal";
         case Opcode::Member: return "Member";
+        case Opcode::NumericBinary: return "NumericBinary";
+        case Opcode::NumericBinaryLocal: return "NumericBinaryLocal";
+        case Opcode::NumericCompareBranch: return "NumericCompareBranch";
+        case Opcode::NumericForNext: return "NumericForNext";
         case Opcode::RegisterBinary: return "RegisterBinary";
         case Opcode::RegisterSnapshot: return "RegisterSnapshot";
         case Opcode::Exit: return "Exit";
+        case Opcode::Removed: return "Removed";
         }
         return "Unknown";
     };
@@ -331,18 +340,14 @@ std::string CifaBytecode::get_cfg_json() const
     {
         if (index >= constants.size()) return "<invalid constant>";
         const auto& constant = constants[index];
+        const auto& value = constant.value;
         std::string summary;
-        switch (constant.value.tag)
-        {
-        case CompactValue::Tag::Empty: summary = "empty"; break;
-        case CompactValue::Tag::Integer: summary = std::format("int {}", constant.value.integer()); break;
-        case CompactValue::Tag::Floating: summary = std::format("float {}", constant.value.floating()); break;
-        case CompactValue::Tag::Boolean: summary = constant.value.boolean() ? "bool true" : "bool false"; break;
-        case CompactValue::Tag::Resource:
-            if (const auto* text = constant.value.resource<std::string>()) summary = "string " + jsonString(*text);
-            else summary = "resource";
-            break;
-        }
+        if (value.empty()) summary = "empty";
+        else if (const auto* integer = value.get_if<std::int64_t>()) summary = std::format("int {}", *integer);
+        else if (const auto* floating = value.get_if<double>()) summary = std::format("float {}", *floating);
+        else if (const auto* boolean = value.get_if<bool>()) summary = *boolean ? "bool true" : "bool false";
+        else if (const auto* text = value.resource<std::pmr::string>()) summary = "string " + jsonString(*text);
+        else summary = "resource";
         if (constant.continue_marker) summary += ", continue";
         return summary;
     };
@@ -374,12 +379,14 @@ std::string CifaBytecode::get_cfg_json() const
         return index < calls.size() ? &calls[index] : nullptr;
     };
 
-    auto instructionText = [&](const Instruction& instruction) -> std::string
+    auto instructionText = [&](const Instruction& instruction, const Instructions& instructions) -> std::string
     {
         const auto opcode = opcodeName(instruction.opcode);
         switch (instruction.opcode)
         {
         case Opcode::Constant: return std::format("{} #{} = {}", opcode, instruction.operand, constantSummary(instruction.operand));
+        case Opcode::ConstantLocal:
+            return std::format("{} slot {} #{} = {}", opcode, instruction.auxiliary - 1, instruction.operand, constantSummary(instruction.operand));
         case Opcode::Load: return std::format("{} {}", opcode, nameAt(instruction.operand));
         case Opcode::LoadLocal:
         case Opcode::DeclareLocal:
@@ -397,10 +404,14 @@ std::string CifaBytecode::get_cfg_json() const
         case Opcode::Jump: return std::format("{} -> {}", opcode, instruction.operand);
         case Opcode::Branch:
         case Opcode::AndBranch:
-        case Opcode::OrBranch: return std::format("{} -> {} (condition false/short-circuit)", opcode, instruction.operand);
+        case Opcode::OrBranch:
+        case Opcode::NumericCompareBranch: return std::format("{} -> {} (condition false/short-circuit)", opcode, instruction.operand);
+        case Opcode::NumericForNext:
+            return std::format("{} slot {} -> {} [{}]", opcode, instruction.operand, instruction.auxiliary, writeOperationName(instruction.write));
         case Opcode::Peek: return std::format("{} {}", opcode, nameAt(instruction.operand));
         case Opcode::Array: return std::format("{} {} element(s)", opcode, instruction.operand);
-        case Opcode::Index: return std::format("{} dimensions={} site={}", opcode, instruction.operand, instruction.auxiliary);
+        case Opcode::Index:
+        case Opcode::IndexLocal: return std::format("{} dimensions={} site={}", opcode, instruction.operand, instruction.auxiliary);
         case Opcode::RangeBegin:
         case Opcode::RangeNext:
         case Opcode::RangeEnd:
@@ -412,6 +423,8 @@ std::string CifaBytecode::get_cfg_json() const
         case Opcode::MethodBegin:
         case Opcode::MethodValue:
         case Opcode::MethodPush:
+        case Opcode::ArrayPushGlobal:
+        case Opcode::ArrayPushGlobalLocal:
         {
             const auto* call = callAt(instruction.operand);
             if (call == nullptr) return std::format("{} <invalid>", opcode);
@@ -434,6 +447,14 @@ std::string CifaBytecode::get_cfg_json() const
                 return std::format("{} {} [{}]", opcode, nameAt(variable.name_id), writeOperationName(instruction.write));
             }
             return std::format("{} [{}]", opcode, writeOperationName(instruction.write));
+        case Opcode::NumericBinary:
+        case Opcode::NumericBinaryLocal:
+            if (instruction.auxiliary < instructions.numeric_operations.size())
+            {
+                const auto& operation = instructions.numeric_operations[instruction.auxiliary];
+                return std::format("{} op={} flags={} site={}", opcode, operation.opcode, operation.flags, instruction.auxiliary);
+            }
+            return std::format("{} site={}", opcode, instruction.auxiliary);
         case Opcode::RegisterBinary:
             if (instruction.operand < module_data->register_binary_sites.size())
             {
@@ -446,6 +467,7 @@ std::string CifaBytecode::get_cfg_json() const
         case Opcode::SwitchCase:
         case Opcode::SwitchDefault:
         case Opcode::SwitchEnd: return std::format("{} frame={} auxiliary={}", opcode, instruction.operand, instruction.auxiliary);
+        case Opcode::Removed: return "Removed";
         default: return std::string(opcode);
         }
     };
@@ -471,7 +493,7 @@ std::string CifaBytecode::get_cfg_json() const
         target += ",\"op\":";
         target += jsonString(opcodeName(instruction.opcode));
         target += ",\"text\":";
-        target += jsonString(instructionText(instruction));
+        target += jsonString(instructionText(instruction, instructions));
         target += ",\"operand\":";
         target += std::to_string(instruction.operand);
         target += ",\"auxiliary\":";
@@ -488,11 +510,15 @@ std::string CifaBytecode::get_cfg_json() const
         target += instruction.discard_result ? "true" : "false";
         target += ",\"target\":";
         if (instruction.opcode == Opcode::Jump || instruction.opcode == Opcode::Branch
-            || instruction.opcode == Opcode::AndBranch || instruction.opcode == Opcode::OrBranch)
+            || instruction.opcode == Opcode::AndBranch || instruction.opcode == Opcode::OrBranch
+            || instruction.opcode == Opcode::NumericCompareBranch)
             target += std::to_string(instruction.operand);
+        else if (instruction.opcode == Opcode::NumericForNext)
+            target += std::to_string(instruction.auxiliary);
         else target += "null";
         target += ",\"source\":";
-        appendSource(target, sourceAt(instruction.source));
+        const SourceRef source = pc < instructions.diagnostics.size() ? instructions.diagnostics[pc].source : SourceRef{};
+        appendSource(target, sourceAt(source));
 
         if (instruction.opcode == Opcode::Call || instruction.opcode == Opcode::CallBegin || instruction.opcode == Opcode::CallEnd
             || instruction.opcode == Opcode::MethodNoArgs || instruction.opcode == Opcode::MethodBegin
@@ -539,9 +565,22 @@ std::string CifaBytecode::get_cfg_json() const
         for (size_t pc = 0; pc < count; ++pc)
         {
             const auto opcode = instructions.code[pc].opcode;
-            if (opcode == Opcode::Jump || opcode == Opcode::Branch || opcode == Opcode::AndBranch || opcode == Opcode::OrBranch)
+            if (opcode == Opcode::Jump || opcode == Opcode::Branch || opcode == Opcode::AndBranch
+                || opcode == Opcode::OrBranch || opcode == Opcode::NumericCompareBranch)
             {
                 if (instructions.code[pc].operand <= count) leader[instructions.code[pc].operand] = true;
+                if (pc + 1 <= count) leader[pc + 1] = true;
+            }
+            else if (opcode == Opcode::NumericForNext)
+            {
+                if (instructions.code[pc].auxiliary <= count) leader[instructions.code[pc].auxiliary] = true;
+                if (instructions.code[pc].member_site != 0
+                    && instructions.code[pc].member_site - 1 < instructions.integer_loops.size())
+                {
+                    const auto& loop = instructions.integer_loops[instructions.code[pc].member_site - 1];
+                    if (loop.body <= count) leader[loop.body] = true;
+                    if (loop.exit <= count) leader[loop.exit] = true;
+                }
                 if (pc + 1 <= count) leader[pc + 1] = true;
             }
             else if (opcode == Opcode::Return || opcode == Opcode::Exit)
@@ -602,10 +641,25 @@ std::string CifaBytecode::get_cfg_json() const
                 addEdge(blockIndex, blockFor[instruction.operand], "false", "false", lastPc, instruction.operand);
                 addEdge(blockIndex, blockFor[block.end], "true", "true", lastPc, block.end);
             }
-            else if (instruction.opcode == Opcode::AndBranch || instruction.opcode == Opcode::OrBranch)
+            else if (instruction.opcode == Opcode::AndBranch || instruction.opcode == Opcode::OrBranch
+                || instruction.opcode == Opcode::NumericCompareBranch)
             {
                 addEdge(blockIndex, blockFor[instruction.operand], "short-circuit", "short-circuit", lastPc, instruction.operand);
                 addEdge(blockIndex, blockFor[block.end], "fallthrough", "", lastPc, block.end);
+            }
+            else if (instruction.opcode == Opcode::NumericForNext)
+            {
+                if (instruction.member_site != 0 && instruction.member_site - 1 < instructions.integer_loops.size())
+                {
+                    const auto& loop = instructions.integer_loops[instruction.member_site - 1];
+                    addEdge(blockIndex, blockFor[loop.body], "true", "loop", lastPc, loop.body);
+                    addEdge(blockIndex, blockFor[loop.exit], "false", "exit", lastPc, loop.exit);
+                }
+                else
+                {
+                    addEdge(blockIndex, blockFor[instruction.auxiliary], "jump", "loop", lastPc, instruction.auxiliary);
+                    addEdge(blockIndex, blockFor[block.end], "fallthrough", "", lastPc, block.end);
+                }
             }
             else if (instruction.opcode == Opcode::Return)
                 addEdge(blockIndex, exitBlock, "return", "return", lastPc, count);
