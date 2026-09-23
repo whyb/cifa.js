@@ -2,11 +2,11 @@
  * Cifa Script Playground — VSCode-Inspired Multi-Tab Layout with File Explorer
  * 使用 IDBFS (IndexedDB) 实现持久化虚拟文件系统
  */
-import { CfgGraphViewer } from './cfg-viewer.js?v=20260918-compat1';
+import { CfgGraphViewer } from './cfg-viewer.js?v=20260923-bytecode-perf';
 
 
 // JS/WASM 必须使用同一缓存版本，修改并重新构建 WASM 后应同步更新此值。
-const CIFA_ASSET_VERSION = '20260918-compat1';
+const CIFA_ASSET_VERSION = '20260923-bytecode-perf';
 
 /* =========================================================
    SVG Icons (inline)

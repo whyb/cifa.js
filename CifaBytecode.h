@@ -10,14 +10,14 @@ class CifaBytecode : public Cifa
     memory::Resource allocation_resource;
     friend class Cifa;
     // 最终执行流的操作码；构建期标记会在 compact() 中移出执行流。
-    enum class Opcode { Constant, ConstantLocal, Load, LoadLocal, DeclareLocal, StoreLocal, IncrementLocal, Enter, Leave, Add, Subtract, Multiply, Divide, Modulo, Less, Greater,
+    enum class Opcode { Constant, ConstantLocal, Load, LoadLocal, DeclareLocal, StoreLocal, IncrementLocal, Add, Subtract, Multiply, Divide, Modulo, Less, Greater,
         LessEqual, GreaterEqual, Equal, NotEqual, BitAnd, BitOr, BitXor, ShiftLeft, ShiftRight,
         Positive, Negative, LogicalNot, BitNot, Cast, Size, MathUnary, MathBinary, Empty, Jump, Branch,
-        AndBranch, OrBranch, LogicalAnd, LogicalOr, Return, ScopeEnter, ScopeLeave,
-        PrepareStore, Store, Increment, Unwind, LoopMark, SwitchMark, SwitchCase, SwitchDefault, SwitchEnd,
-        CallBegin, Call, CallEnd, Peek, Array, Index, IndexLocal, RangeBegin, RangeNext, RangeEnd, MethodNoArgs, BindArgument,
-        MethodBegin, MethodValue, MethodPush, ArrayPushGlobal, ArrayPushGlobalLocal, Member, NumericBinary, NumericBinaryLocal,
-        NumericCompareBranch, NumericForNext, RegisterBinary, RegisterSnapshot, Exit, Removed };
+        AndBranch, OrBranch, LogicalAnd, LogicalOr, Return, ReleaseLocal,
+        PrepareStore, Store, Increment, Switch,
+        CallBegin, Call, Peek, Array, Index, IndexLocal, Range, MethodCheck,
+        MethodCall, MethodPush, ArrayPushGlobal, ArrayPushGlobalLocal, Member, NumericBinary, NumericBinaryLocal,
+        NumericCompareBranch, NumericForNext, IntIncrementLocal, IntForNext, RegisterBinary, Exit, Removed };
     // 源码位置在冷表中的稳定编号，零表示没有对应源码位置。
     struct SourceRef
     {
@@ -38,25 +38,6 @@ class CifaBytecode : public Cifa
         explicit SourceLocation(const CalUnit& node);
     };
     struct RegisterSlots;
-    // 一个词法作用域的名称绑定；动态创建的变量单独使用动态槽窗口。
-    struct Scope
-    {
-        const memory::Resource* value_resource;
-        struct Binding
-        {
-            std::pmr::string name;
-            RegisterSlots* file = nullptr;
-            size_t slot = 0;
-        };
-        std::pmr::vector<Binding> bindings;
-        std::unique_ptr<RegisterSlots> dynamic_registers;
-        explicit Scope(const memory::Resource& resource = memory::default_resource())
-            : value_resource(&resource), bindings(resource.get()) {}
-        Binding* find(std::string_view name);
-        Binding& create(const std::string& name);
-        void bind(const std::string& name, RegisterSlots* file, size_t slot);
-    };
-    using ScopeStack = std::pmr::vector<Scope>;
     struct Machine;
     enum class WriteOperation { Assign, Add, Subtract, Multiply, Divide, Modulo, BitAnd, BitOr, BitXor, ShiftLeft, ShiftRight, PostAdd, PostSubtract, Invalid };
     static WriteOperation write_operation(const std::string& symbol);
@@ -91,8 +72,8 @@ class CifaBytecode : public Cifa
         size_t input_count = 0;
         bool discard_result = false;
     };
-    static_assert(sizeof(Instruction) == 80);
-    static_assert(sizeof(BuildInstruction) == 88);
+    static_assert(sizeof(Instruction) == (sizeof(void*) == 8 ? 80 : 40), "Instruction size mismatch!");
+    static_assert(sizeof(BuildInstruction) == (sizeof(void*) == 8 ? 88 : 44), "BuildInstruction size mismatch!");
     // 与最终 PC 一一对应的冷诊断表，按需取得条件和赋值目标位置。
     struct InstructionDiagnostic
     {
@@ -101,6 +82,12 @@ class CifaBytecode : public Cifa
         SourceRef target_source;
     };
     static_assert(sizeof(InstructionDiagnostic) == sizeof(size_t) * 3);
+    struct DiagnosticFrameEvent
+    {
+        size_t pc = 0;
+        SourceRef source;
+        bool open = false;
+    };
     // 固定格式的数值热操作，供 NumericBinary 等专用路径使用。
     struct RegisterOperation
     {
@@ -130,13 +117,12 @@ class CifaBytecode : public Cifa
         std::pmr::vector<size_t> numeric_local_sites{resource};
         std::pmr::vector<size_t> register_inputs{resource};
         std::pmr::vector<std::pmr::vector<std::pair<size_t, bool>>> diagnostic_frames{resource};
+        std::pmr::vector<DiagnosticFrameEvent> diagnostic_frame_events{resource};
         size_t register_capacity = 0;
         size_t temporary_count = 0;
-        size_t loop_state_count = 0;
         size_t switch_count = 0;
         size_t range_count = 0;
-        size_t method_argument_count = 0;
-        size_t scope_capacity = 0;
+        size_t method_scratch_count = 0;
     };
     struct CompactValue;
     // VM 内部数组；共享底层容器并在写入时复制，维持语言的按值隔离语义。
@@ -344,17 +330,15 @@ class CifaBytecode : public Cifa
         Storage value;
     };
     static_assert(sizeof(BytecodeValue) == sizeof(BytecodeValue::Storage));
-    // 常量池条目；continue_marker 仅用于编译期控制流归约。
+    // 常量池条目。
     struct ConstantValue
     {
         BytecodeValue::Storage value;
-        bool continue_marker = false;
         ConstantValue(Object object, const memory::Resource& resource) : value(std::move(object.value), resource) {}
         explicit ConstantValue(bool boolean) : value(boolean) {}
         explicit ConstantValue(int integer) : value(std::int64_t(integer)) {}
         ConstantValue(const std::string& text, const memory::Resource& resource) : value(VmString(text, resource)) {}
         ConstantValue(ObjectVector elements, const memory::Resource& resource) : value(std::any(std::move(elements)), resource) {}
-        ConstantValue(const char* text, bool marker) : value(std::any(std::string(text))), continue_marker(marker) {}
     };
     // 连续寄存器文件的一个窗口。函数参数、局部和临时值共享同一存储，通过 base/size 划分生命周期。
     struct RegisterSlots
@@ -439,6 +423,7 @@ class CifaBytecode : public Cifa
         const BytecodeValue::Storage& payload(size_t slot) const;
         BytecodeValue::Storage& resource_payload(size_t slot);
         void release_payload(size_t slot);
+        void release_scope_slot(size_t slot);
         void store_payload(size_t slot, BytecodeValue::Storage value);
         void store_payload(size_t slot, const Object::Storage& value);
         void store_payload(size_t slot, Object::Storage&& value);
@@ -456,6 +441,7 @@ class CifaBytecode : public Cifa
         bool cast_numeric(size_t destination, const RegisterSlots& source, size_t slot, const std::string& type);
         bool cast_numeric(size_t destination, const RegisterSlots& source, size_t slot, NumericBinding binding);
         void bind_numeric(size_t slot, NumericBinding binding);
+        NumericBinding numeric_binding(size_t slot) const { return bindings[window_base + slot]; }
         bool has_name(size_t slot) const { return slot_names[window_base + slot] != 0; }
         bool integer(size_t slot, std::int64_t& result) const;
         bool number(size_t slot, std::int64_t& integer, double& floating, bool& is_double) const;
@@ -542,13 +528,22 @@ class CifaBytecode : public Cifa
     // 已编译脚本函数及其局部槽需求。
     struct FunctionCode
     {
-        explicit FunctionCode(std::pmr::memory_resource* resource) : parameters(resource), instructions(resource) {}
+        explicit FunctionCode(std::pmr::memory_resource* resource) : parameters(resource), local_slots(resource), instructions(resource) {}
         struct Parameter
         {
             std::string name;
             std::string type_name;
         };
+        enum class LocalStorage : std::uint8_t { StaticNumeric, StaticValue, Cleanup };
+        struct LocalSlot
+        {
+            size_t type_id = 0;
+            bool has_type = false;
+            LocalStorage storage = LocalStorage::StaticValue;
+        };
         std::pmr::vector<Parameter> parameters;
+        // Lexical resolution owns this table; execution addresses slots directly.
+        std::pmr::vector<LocalSlot> local_slots;
         std::string name;
         std::string return_type;
         SourceRef body_source;
@@ -586,6 +581,8 @@ class CifaBytecode : public Cifa
         SourceRef root_source;
         std::pmr::vector<size_t> root_entries{resource.get()};
         std::pmr::deque<CallSite> calls{resource.get()};
+        std::pmr::vector<FunctionCode::LocalSlot> local_slots{resource.get()};
+        size_t local_slot_count = 0;
         std::pmr::unordered_map<std::string, std::pmr::unordered_map<size_t, std::shared_ptr<FunctionCode>>> function_code{resource.get()};
         const SourceLocation& source(const SourceRef& reference) const { return sources.at(reference.id - 1); }
     };
@@ -601,7 +598,6 @@ class CifaBytecode : public Cifa
         RegisterSlots global_values;
         std::pmr::unordered_map<std::string, size_t> global_slots;
         std::pmr::vector<bool> global_exists;
-        ScopeStack scopes;
         std::pmr::unordered_map<std::string, std::pmr::unordered_map<size_t, std::shared_ptr<const Module>>> functions;
         struct CachedFunction
         {
@@ -663,7 +659,7 @@ class CifaBytecode : public Cifa
         explicit Machine(CifaBytecode& value_host)
             : host(value_host), registers(0,host.allocation_resource), global_values(0,host.allocation_resource),
               global_slots(host.allocation_resource.get()), global_exists(host.allocation_resource.get()),
-              scopes(host.allocation_resource.get()), functions(host.allocation_resource.get()),
+              functions(host.allocation_resource.get()),
               function_cache(host.allocation_resource.get()), returns(host.allocation_resource.get()),
               call_stack(host.allocation_resource.get()) { }
     size_t ensure_global_slot(const std::string& name);
@@ -680,7 +676,6 @@ class CifaBytecode : public Cifa
         void set_no_value_error(const Object& value, const SourceLocation* location = nullptr);
         void set_no_value_error(const Object::NoValue* value, const SourceLocation* location = nullptr);
         Object error_result() const { return Object("RuntimeError", "Error"); }
-        Scope::Binding* find_slot(const std::string& name);
         NamedValueRef named_value(const std::string& name);
         IndexedValueRef resolve_member(const std::string& base_name, const std::string& field_name);
         void read_named(RegisterSlots& destination, size_t slot, const std::string& name, const std::string& type_name, bool with_type, bool only_check,
@@ -785,10 +780,11 @@ class CifaBytecode : public Cifa
     decltype(Module::function_code)& function_code = module_data->function_code;
     struct Loop
     {
-        Loop(size_t scope_count, size_t trace_count, std::pmr::memory_resource* resource, bool switch_loop = false)
-            : scopes(scope_count), traces(trace_count), breaks(resource), continues(resource), is_switch(switch_loop) {}
-        size_t scopes;
-        size_t traces;
+        Loop(size_t break_depth, size_t continue_depth, std::pmr::memory_resource* resource, bool switch_loop = false)
+            : break_cleanup_depth(break_depth), continue_cleanup_depth(continue_depth), breaks(resource), continues(resource), is_switch(switch_loop) {}
+        size_t break_cleanup_depth;
+        size_t continue_cleanup_depth;
+        size_t local_scope_depth = 0;
         std::pmr::vector<size_t> breaks;
         std::pmr::vector<size_t> continues;
         bool is_switch = false;
@@ -796,31 +792,46 @@ class CifaBytecode : public Cifa
     std::pmr::vector<Loop> compile_loops{allocation_resource.get()};
     struct LabelBlock
     {
-        LabelBlock(size_t value, std::pmr::memory_resource* resource) : mark(value), targets(resource), jumps(resource) {}
+        LabelBlock(size_t cleanup_depth, std::pmr::memory_resource* resource)
+            : control_cleanup_depth(cleanup_depth), targets(resource), jumps(resource) {}
         LabelBlock(const LabelBlock&) = delete;
         LabelBlock(LabelBlock&&) = default;
         LabelBlock& operator=(LabelBlock&&) = default;
-        size_t mark;
+        size_t control_cleanup_depth;
         std::pmr::unordered_map<std::string, size_t> targets;
         std::pmr::vector<std::pair<size_t, std::string>> jumps;
     };
     std::pmr::vector<LabelBlock> compile_blocks{allocation_resource.get()};
-    size_t compile_scopes = 0;
-    size_t compile_traces = 0;
+    struct ControlCleanup
+    {
+        Opcode opcode;
+        size_t id;
+        size_t auxiliary;
+    };
+    std::pmr::vector<ControlCleanup> compile_control_cleanups{allocation_resource.get()};
+    size_t compile_next_range_id = 0;
+    size_t compile_next_switch_id = 0;
     FunctionCode* compiling_function = nullptr;
+    std::pmr::vector<FunctionCode::LocalSlot>* compiling_local_slots = nullptr;
+    size_t* compiling_local_slot_count = nullptr;
     std::pmr::vector<std::pmr::unordered_map<std::string, size_t>> compile_local_scopes{allocation_resource.get()};
-    std::pmr::unordered_map<const CalUnit*, bool> compile_scope_effects{allocation_resource.get()};
     std::pmr::vector<size_t> compile_local_scope_bases{allocation_resource.get()};
+    // 抬升块弹出的编译期槽位回收池：同名兄弟块复用同一槽位，避免运行时
+    // 名字绑定（ConstantLocal 等）指向不同槽而报错。
+    std::pmr::vector<std::pair<std::pmr::string, size_t>> lifted_slot_pool{allocation_resource.get()};
     std::pmr::unordered_set<std::string> compile_array_locals{allocation_resource.get()};
     const std::unordered_map<std::string, FunctionOverloads>* compile_script_functions = nullptr;
     bool compile_allows_script_constant_folding = false;
     std::pmr::unordered_set<std::string> compile_inline_functions{allocation_resource.get()};
     std::pmr::unordered_map<const std::pmr::vector<BuildInstruction>*, std::pmr::vector<InstructionDiagnostic>> pending_diagnostics{allocation_resource.get()};
+    std::pmr::unordered_map<const std::pmr::vector<BuildInstruction>*, std::pmr::vector<DiagnosticFrameEvent>> pending_diagnostic_frames{allocation_resource.get()};
 
     // 编译器辅助函数：建立冷源码表、密封指令流，并在 compact 时重映射控制流 PC。
     size_t source_id(const CalUnit& source);
     SourceRef source_ref(const CalUnit* node);
     InstructionDiagnostic& pending_diagnostic(std::pmr::vector<BuildInstruction>& instructions);
+    void begin_diagnostic_frame(std::pmr::vector<BuildInstruction>& instructions, SourceRef source);
+    void end_diagnostic_frame(std::pmr::vector<BuildInstruction>& instructions, SourceRef source);
     size_t intern_name(const std::string& name);
     size_t index_site(const CalUnit& node);
     void seal(Instructions& instructions);
@@ -829,8 +840,9 @@ class CifaBytecode : public Cifa
     SourceLocation& source(const SourceRef& reference) const;
     std::optional<size_t> local_slot(const CalUnit& node, bool declare, bool allow_untyped_declaration = false);
     size_t next_local_slot() const;
-    bool block_needs_runtime_scope(const CalUnit& node);
-    void analyze_binding_scopes(const CalUnit& node, bool custom_conversions);
+    void classify_local_slot(size_t slot, const CalUnit& node);
+    void emit_cleanup_to(std::pmr::vector<BuildInstruction>& instructions, size_t local_scope_depth, SourceRef source);
+    void emit_control_cleanup_to(std::pmr::vector<BuildInstruction>& instructions, size_t cleanup_depth, SourceRef source);
     static bool operation(const CalUnit& node, Opcode& opcode);
     bool try_fold_constant(const CalUnit& node, Object& value,
         const std::pmr::unordered_map<std::string, Object>* parameters = nullptr,
@@ -963,6 +975,11 @@ public:
     bool is_profiling_enabled() const;
     void reset_profile();
     std::string get_profile_json() const;
+    //诊断用：调整单次运行最多记录的指令数（默认 2,000,000），以及读取计数结果。
+    void set_profile_instruction_limit(size_t limit) { profile_state.instruction_limit = limit; }
+    const ProfileState& profile_metrics() const { return profile_state; }
+    //诊断用：输出密封后的指令流与数值操作表，便于核对优化结果。
+    std::string dump_instruction_listing() const;
     Object run(const std::string& entry_label = {});
     Object run_script(std::string script);
     Object run_file(const std::string& filename);
