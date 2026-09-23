@@ -2,11 +2,11 @@
  * Cifa Script Playground — VSCode-Inspired Multi-Tab Layout with File Explorer
  * 使用 IDBFS (IndexedDB) 实现持久化虚拟文件系统
  */
-import { CfgGraphViewer } from './cfg-viewer.js?v=20260923-bytecode-perf';
+import { CfgGraphViewer } from './cfg-viewer.js?v=20260923-pi-example';
 
 
 // JS/WASM 必须使用同一缓存版本，修改并重新构建 WASM 后应同步更新此值。
-const CIFA_ASSET_VERSION = '20260923-bytecode-perf';
+const CIFA_ASSET_VERSION = '20260923-pi-example';
 
 /* =========================================================
    SVG Icons (inline)
@@ -102,7 +102,7 @@ int big_is_zero(a) {
     return 0;
 }
 
-// 大数加法: res = a + b
+// 大数加法: res = a + b (基于 Base 10^9)
 auto big_add(a, b) {
     res = {};
     int len_a = size(a);
@@ -110,6 +110,7 @@ auto big_add(a, b) {
     int max_len = len_a;
     if (len_b > max_len) max_len = len_b;
 
+    double BASE = 1000000000.0;
     int carry = 0;
     for (int i = 0; i < max_len || carry > 0; i++) {
         int val_a = 0;
@@ -117,19 +118,20 @@ auto big_add(a, b) {
         if (i < len_a) val_a = a[i];
         if (i < len_b) val_b = b[i];
 
-        int sum = val_a + val_b + carry;
-        res.push_back(floor(fmod(sum, 10000)));
-        carry = floor(sum / 10000);
+        double sum = (double)val_a + val_b + carry;
+        res.push_back(floor(fmod(sum, BASE)));
+        carry = floor(sum / BASE);
     }
     return res;
 }
 
-// 大数减法: res = a - b (前提要求 a >= b)
+// 大数减法: res = a - b (前提要求 a >= b，基于 Base 10^9)
 auto big_sub(a, b) {
     res = {};
     int len_a = size(a);
     int len_b = size(b);
     int borrow = 0;
+    int BASE = 1000000000;
 
     for (int i = 0; i < len_a; i++) {
         int val_a = a[i];
@@ -138,7 +140,7 @@ auto big_sub(a, b) {
 
         int diff = val_a - val_b - borrow;
         if (diff < 0) {
-            diff += 10000;
+            diff += BASE;
             borrow = 1;
         } else {
             borrow = 0;
@@ -153,21 +155,23 @@ auto big_sub(a, b) {
     return res;
 }
 
-// 大数乘单个整数: res = a * factor
+// 大数乘单个整数: res = a * factor (基于 Base 10^9)
 auto big_mul_int(a, factor) {
     res = {};
-    int carry = 0;
+    double carry = 0;
     int len = size(a);
+    double BASE = 1000000000.0;
+
     for (int i = 0; i < len || carry > 0; i++) {
         double val = carry;
-        if (i < len) val += a[i] * factor;
-        res.push_back(floor(fmod(val, 10000)));
-        carry = floor(val / 10000);
+        if (i < len) val += (double)a[i] * factor;
+        res.push_back(floor(fmod(val, BASE)));
+        carry = floor(val / BASE);
     }
     return res;
 }
 
-// 大数除以单个整数: res = a / divisor
+// 大数除以单个整数: res = a / divisor (基于 Base 10^9)
 auto big_div_int(a, divisor) {
     res = {};
     int len = size(a);
@@ -176,9 +180,11 @@ auto big_div_int(a, divisor) {
         return res;
     }
     double rem = 0;
+    double BASE = 1000000000.0;
     tmp = {};
+
     for (int i = len - 1; i >= 0; i--) {
-        double cur = rem * 10000 + a[i];
+        double cur = rem * BASE + a[i];
         int q = floor(cur / divisor);
         rem = fmod(cur, divisor);
         tmp.push_back(q);
@@ -216,35 +222,37 @@ auto calc_arctan(x, base_val, max_iters) {
     return sum_val;
 }
 
-// 格式化输出字符串
+// 格式化输出字符串 (适配 9 位补齐)
 string format_pi(pi_arr, target_digits) {
     int len = size(pi_arr);
-    if (len == 0) return "0.0000";
+    if (len == 0) return "0.000000000";
 
     string str = to_string(pi_arr[len - 1]) + ".";
     int printed_digits = 0;
 
     for (int i = len - 2; i >= 0 && printed_digits < target_digits; i--) {
         int v = pi_arr[i];
-        if (v < 10) str += "000" + to_string(v);
-        else if (v < 100) str += "00" + to_string(v);
-        else if (v < 1000) str += "0" + to_string(v);
-        else str += to_string(v);
-        printed_digits += 4;
+        string v_str = to_string(v);
+        // 9位对齐格式化补前导0
+        while (size(v_str) < 9) {
+            v_str = "0" + v_str;
+        }
+        str += v_str;
+        printed_digits += 9;
     }
     return str;
 }
 
 int target_digits = 500;
-// 125 (500/4) + 3 (缓冲区) = 128 个 0 块
-int num_blocks = floor(target_digits / 4) + 3;
+// 500/9 约 56 个块 + 3 缓冲区 = 59 个块（原方案需要 128 个块，计算量减少一大半）
+int num_blocks = floor(target_digits / 9) + 3;
 
 base_val = {};
 for (int i = 0; i < num_blocks; i++) {
     base_val.push_back(0);
 }
 base_val.push_back(1);
-// 360 次迭代足以保证 25^-360 < 10^-500 的精度收敛
+
 int iters = 360;
 atan5 = calc_arctan(5, base_val, iters);
 atan239 = calc_arctan(239, base_val, iters);
@@ -253,10 +261,10 @@ term1 = big_mul_int(atan5, 16);
 term2 = big_mul_int(atan239, 4);
 pi_big = big_sub(term1, term2);
 string pi_str = format_pi(pi_big, target_digits);
+
 println("高精度计算 PI (前 " + to_string(target_digits) + " 位) :");
 println(pi_str);
-return pi_str;
-` },
+return pi_str;` },
         ],
     },
     {
