@@ -738,6 +738,12 @@ public:
     Object run_script(std::string script);
     Object run_file(const std::string& filename);
 
+    // Frontend-only bridge for independent runtimes. This performs preprocessing,
+    // parsing, function/struct collection, and static checks without executing.
+    bool compile_for_external_runtime(std::string script, CalUnit& root,
+        std::unordered_map<std::string, FunctionOverloads>& functions,
+        std::unordered_map<std::string, std::vector<StructField>>& structs);
+
     bool has_error() const;
 
     std::string get_errors_str() const;

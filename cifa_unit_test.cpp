@@ -393,6 +393,13 @@ bool builtin_type_function_test()
         auto pending_value = 1;
         arr = {1, 2};
         m["x"] = 1;
+        auto string_size = size("abc");
+        auto array_size = size(arr);
+        auto pushed_size = arr.push_back(3);
+        auto array_contains = arr.contains(3);
+        auto cleared_size = arr.clear();
+        auto erased_size = m.erase("x");
+        auto map_contains = m.contains("x");
         return type(empty_value) == "int"
             && type(pending_value) == "int"
             && type(1) == "int"
@@ -401,7 +408,14 @@ bool builtin_type_function_test()
             && type(true) == "bool"
             && type("abc") == "string"
             && type(arr) == "array"
-            && type(m) == "map";
+                && type(m) == "map"
+                && type(string_size) == "int"
+                && type(array_size) == "int"
+                && type(pushed_size) == "int"
+                && type(cleared_size) == "int"
+                && type(erased_size) == "int"
+                && type(array_contains) == "bool"
+                && type(map_contains) == "bool";
     )");
     return o.isNumber() && o.toDouble() == 1.0;
 }
@@ -799,6 +813,7 @@ bool script_function_argument_count_test()
             std::println(stderr, "  {}: {}", label, error);
             return true;
         };
+
     {
         Cifa c;
         auto result = c.run_script(
@@ -1125,6 +1140,28 @@ bool typed_numeric_storage_test()
     {
         std::println(stderr, "typed array and struct: result={}, error={}", o.toString(), c.get_runtime_error());
         return false;
+    }
+    return true;
+}
+
+bool nested_vector_type_test()
+{
+    const char* cases[] = {
+        "vector<int> values; return type(values) == \"array\";",
+        "vector<vector<int>> matrix; return type(matrix) == \"array\";",
+        "vector<int> values = {1.9, 2.1}; return values[0] == 1 && values[1] == 2;",
+        "vector<vector<int>> matrix = {{3.8, 4.2}, {5.7}}; return matrix[1][0] == 5;"
+    };
+    for (const auto* script : cases)
+    {
+        Cifa c;
+        auto result = c.run_script(script);
+        if (!result.hasValue() || !result.toBool() || c.has_runtime_error())
+        {
+            std::println(stderr, "nested vector: script={}, result={}, error={}, compile={}", script,
+                result.toString(), c.get_runtime_error(), c.get_errors_str());
+            return false;
+        }
     }
     return true;
 }
@@ -1927,6 +1964,7 @@ bool loop_and_recursion_execution_test()
         { "for (; true;) { return 7; }", 7 },
         { "value = 0; while (value < 500) { value++; } return value;", 500 },
         { "total = 0; for (int index = 0; index < 500; index++) { total += index; } return total;", 124750 },
+        { "total = 0; for (int index = -2; index < 3; index++) { total += index; } return total;", 0 },
         { "value = 0; do { value++; } while (value < 500); return value;", 500 },
         { "values = {1, 2, 3, 4, 5}; total = 0; for (value : values) { total += value; } return total;", 15 },
         { "value = 0; again: value++; if (value < 500) goto again; return value;", 500 },
@@ -2201,6 +2239,20 @@ bool goto_test()
         && expect_static_error("first: first:", "duplicate label 'first'")
         && expect_static_error("goto inside; { inside: return 1; }", "goto 'inside' jumps into a nested or sibling block")
         && expect_static_error("{ left: goto right; } { right: return 1; }", "goto 'right' jumps into a nested or sibling block");
+}
+
+bool array_function_value_semantics_test()
+{
+    Cifa c;
+    const auto result = c.run_script(R"(
+        inspect(values) {
+            return values[0] + size(values);
+        }
+        values = {1, 2};
+        result = inspect(values);
+        return result == 3 && values[0] == 1 && size(values) == 2;
+    )");
+    return result.hasValue() && result.toBool() && !c.has_runtime_error();
 }
 
 bool map_methods_test()
@@ -3087,6 +3139,7 @@ int main(int argc, char** argv)
     RUN_COMMON(static_syntax_error_test);
     RUN_COMMON(loop_and_recursion_execution_test);
     RUN_COMMON(array_methods_test);
+    RUN_COMMON(array_function_value_semantics_test);
     RUN_COMMON(map_methods_test);
     RUN_COMMON(non_block_branch_declaration_test);
     RUN_COMMON(sprintf_format_test);
@@ -3116,6 +3169,7 @@ int main(int argc, char** argv)
     RUN_CIFA(registered_type_binding_test);
     RUN_CIFA(int64_storage_test);
     RUN_CIFA(c_string_library_test);
+    RUN_CIFA(nested_vector_type_test);
     RUN_CIFA(method_receiver_error_order_test);
     RUN_CIFA(runtime_error_abort_test);
     RUN_CIFA(nested_error_preservation_test);
